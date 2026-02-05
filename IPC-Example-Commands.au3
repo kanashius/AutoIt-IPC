@@ -7,27 +7,18 @@
 		Example script for the IPC InterProcessCommunication UDF.
 
 #ce ----------------------------------------------------------------------------
-
 #include "IPC.au3"
 
 Global Const $iCOMMAND_START = 1, $iCOMMAND_END = 2, $iCOMMAND_PROGRESS = 3, $iCOMMAND_UNKNOWN = 4
 
-; check if the call is a sub process
-Local $hSubProcess = __IPC_SubCheck()
-If $hSubProcess<>0 Then ; if it is a sub process, the handle is checked here
-	_SubProcess($hSubProcess) ; start the subprocess
-Else ; otherwise start the main process
-	_MainProcess()
-EndIf
-
+; check if the call is a sub process and start the respective function
+Local $hSubProcess = __IPC_SubCheck("_SubProcess", "_MainProcess")
+If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubCheck: "&@error&":"&@extended)
 ; main/sub process both should call shutdown before exit
 __IPC_Shutdown()
 Exit
 
 Func _MainProcess()
-	; call IPC StartUp for initialization. For the subprocess, this is done by the __IPC_SubCheck method.
-	__IPC_StartUp($__IPC_LOG_INFO, Default, Default)
-	If @error Then ConsoleWrite("Error __IPC_StartUp "&@error&":"&@extended&@crlf)
 
 	; start a sub process calling the same script.
 	; the _CallbackMain method is called for messages received from the sub process
