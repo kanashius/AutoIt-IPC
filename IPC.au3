@@ -131,19 +131,17 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC_Shutdown()
-	If UBound(MapKeys($__IPC__Data))>0 Then ; startup was called
-		Local $arProcesses = MapKeys($__IPC__Data.mServer.mProcesses)
-		For $i=0 To UBound($arProcesses)-1
-			__IPC__ServerProcessRemove($arProcesses[$i], True)
-		Next
-		__IPC__SubDisconnect()
-		If MapExists($__IPC__Data, "iStartUp") And $__IPC__Data.iStartUp=1 Then TCPShutdown()
-		Local $mData[]
-		$__IPC__Data = $mData
-		__IPC_Log($__IPC_LOG_INFO, "IPC shutdown")
-		Return True
-	EndIf
-	Return False
+	If UBound(MapKeys($__IPC__Data))<=0 Then Return False ; startup was not called
+	Local $arProcesses = MapKeys($__IPC__Data.mServer.mProcesses)
+	For $i=0 To UBound($arProcesses)-1
+		__IPC__ServerProcessRemove($arProcesses[$i], True)
+	Next
+	__IPC__SubDisconnect()
+	If MapExists($__IPC__Data, "iStartUp") And $__IPC__Data.iStartUp=1 Then TCPShutdown()
+	Local $mData[]
+	$__IPC__Data = $mData
+	__IPC_Log($__IPC_LOG_INFO, "IPC shutdown")
+	Return True
 EndFunc
 
 ; #FUNCTION# ====================================================================================================================
@@ -610,36 +608,34 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__SubDisconnect($bErr = False)
-	If $__IPC__Data.mClient.iSocket<>Default Then
-		If $bErr Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process lost.")
-		__IPC_Log($__IPC_LOG_DEBUG, "Close Client connection.")
-		Local $iSocket = $__IPC__Data.mClient.iSocket
-		TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
-		Local $bTimeOut = True
-		For $i=0 to 1000 ; timeout after 10 seconds
-			TCPSend($iSocket, Binary($__IPC_MSG_ACK))
-			If @error Then
-				$bTimeOut = False
-				ExitLoop
-			EndIf
-			Sleep(10)
-		Next
-		If $bTimeOut Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process did not close properly.")
-		TCPCloseSocket($__IPC__Data.mClient.iSocket)
-		$__IPC__Data.mClient.iPullRate = $__IPC_SubPullRate
-		$__IPC__Data.mClient.iSocket = Default
-		If $__IPC__Data.mClient.sCallback<>Default Then
-			If $__IPC__Data.mClient.iPullRate>0 Then AdlibUnRegister("__IPC_SubProcessing")
-			$__IPC__Data.mClient.sCallback = Default
+	If $__IPC__Data.mClient.iSocket=Default Then Return False
+	If $bErr Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process lost.")
+	__IPC_Log($__IPC_LOG_DEBUG, "Close Client connection.")
+	Local $iSocket = $__IPC__Data.mClient.iSocket
+	TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
+	Local $bTimeOut = True
+	For $i=0 to 1000 ; timeout after 10 seconds
+		TCPSend($iSocket, Binary($__IPC_MSG_ACK))
+		If @error Then
+			$bTimeOut = False
+			ExitLoop
 		EndIf
-		If $__IPC__Data.mClient.sExitCallback<>Default Then
-			Call($__IPC__Data.mClient.sExitCallback)
-			$__IPC__Data.mClient.sExitCallback = Default
-		EndIf
-		__IPC_Log($__IPC_LOG_INFO, "Client connection closed.")
-		Return True
+		Sleep(10)
+	Next
+	If $bTimeOut Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process did not close properly.")
+	TCPCloseSocket($__IPC__Data.mClient.iSocket)
+	$__IPC__Data.mClient.iPullRate = $__IPC_SubPullRate
+	$__IPC__Data.mClient.iSocket = Default
+	If $__IPC__Data.mClient.sCallback<>Default Then
+		If $__IPC__Data.mClient.iPullRate>0 Then AdlibUnRegister("__IPC_SubProcessing")
+		$__IPC__Data.mClient.sCallback = Default
 	EndIf
-	Return False
+	If $__IPC__Data.mClient.sExitCallback<>Default Then
+		Call($__IPC__Data.mClient.sExitCallback)
+		$__IPC__Data.mClient.sExitCallback = Default
+	EndIf
+	__IPC_Log($__IPC_LOG_INFO, "Client connection closed.")
+	Return True
 EndFunc
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
@@ -757,24 +753,22 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__ServerProcessLogStd($iProcess, $bErr = False)
-	If MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then
-		Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
-		Local $sData
-		If Not $bErr Then $sData = StdoutRead($mProcess.iPID)
-		If $bErr Then $sData = StderrRead($mProcess.iPID)
-		If @error Then Return SetError(2, 0, 0)
-		If @extended>0 Then
-			Local $arData = StringSplit($sData, @CRLF, 3)
-			For $i=0 To UBound($arData)-1
-				If $i=UBound($arData)-1 And StringLen($arData[$i])=0 Then ContinueLoop
-				If $bErr Then
-					__IPC_Log($__IPC_LOG_ERROR, $arData[$i], Default, Default, $mProcess.hProcess)
-				Else
-					__IPC_Log($__IPC_LOG_INFO, $arData[$i], Default, Default, $mProcess.hProcess)
-				EndIf
-			Next
+	If Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return
+	Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
+	Local $sData
+	If Not $bErr Then $sData = StdoutRead($mProcess.iPID)
+	If $bErr Then $sData = StderrRead($mProcess.iPID)
+	If @error Then Return SetError(2, 0, 0)
+	If @extended<=0 Then Return
+	Local $arData = StringSplit($sData, @CRLF, 3)
+	For $i=0 To UBound($arData)-1
+		If $i=UBound($arData)-1 And StringLen($arData[$i])=0 Then ContinueLoop
+		If $bErr Then
+			__IPC_Log($__IPC_LOG_ERROR, $arData[$i], Default, Default, $mProcess.hProcess)
+		Else
+			__IPC_Log($__IPC_LOG_INFO, $arData[$i], Default, Default, $mProcess.hProcess)
 		EndIf
-	EndIf
+	Next
 EndFunc
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
