@@ -19,7 +19,6 @@ __IPC_Shutdown()
 Exit
 
 Func _MainProcess()
-
 	; start a sub process calling the same script.
 	; the _CallbackMain method is called for messages received from the sub process
 	; 100 is the parameter provided to the sub process (total items)
