@@ -37,6 +37,9 @@ EndFunc
 
 Func _CallbackMain($hProcess, $data, $iCmd = Default)
 	; $hProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
+	;~ TODO: That hint above is confusing to me. Is it simply not in use yet
+	;~ or is it a left over and can be removed? I mean $hProcess.
+
 	; $data can be a string or binary data, depending on the data sent by the sub process
 	; $iCmd only needs to be a parameter, if the sub process sends commands. If the sub process may send commands, but also only data without a command, a default value needs to be specified.
 	Switch $iCmd

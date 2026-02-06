@@ -35,6 +35,8 @@ Func _SubProcess()
 EndFunc
 
 Func _CallbackSub($data, $iCmd = Default)
+	;~ TODO: $data is not used and why is $iCmd "Default"?
+	;~ The Default state is not handled in _process or deeper, so far I can see.
 	_process($iCmd)
 EndFunc
 

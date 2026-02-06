@@ -38,6 +38,9 @@ Func _MainProcess()
 			Case $mMainGui.idButtonStart
 				GUICtrlSetData($mMainGui.idEdit, "")
 				GUICtrlSetData($mMainGui.idProgress, 0)
+				;~ TODO: Can $hProcess be removed? I don't see the reference.
+				;~ Since it's local scope here, I guess it should be removed or do you need
+				;~ it as global scope variable?
 				Local $hProcess = __IPC_StartProcess("_CallbackMain", "11")
 		EndSwitch
 	WEnd
