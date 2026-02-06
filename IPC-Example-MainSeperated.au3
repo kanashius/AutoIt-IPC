@@ -13,8 +13,8 @@
 __IPC_StartUp($__IPC_LOG_INFO, 80)
 If @error Then ConsoleWrite("Error __IPC_StartUp "&@error&":"&@extended&@crlf)
 
-Local $arArguments = [100, 200, 300]
-Local $hProcess = __IPC_StartProcess("_CallbackMain", $arArguments, Default, __IPC_GetScriptExecutable("IPC-Example-SubSeperated"))
+Global $arArguments = [100, 200, 300]
+Global $hProcess = __IPC_StartProcess("_CallbackMain", $arArguments, Default, __IPC_GetScriptExecutable("IPC-Example-SubSeperated"))
 If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error starting subprocess: "&@error&":"&@extended)
 
 While ProcessExists(__IPC_SubGetPID($hProcess)) And Sleep(10)

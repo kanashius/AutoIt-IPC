@@ -14,7 +14,7 @@ Global Const $iCOMMAND_TEST = 1, $iCOMMAND_UNKNOWN = 2, $iCOMMAND_PROGRESS = 3
 Global $mMainGui[] ; just a map for all ctrl variables to avoid to many global variables
 
 ; check if the call is a sub process and start the respective function
-Local $hSubProcess = __IPC_SubCheck("_SubProcess", "_MainProcess", "_CallbackSub")
+Global $hSubProcess = __IPC_SubCheck("_SubProcess", "_MainProcess", "_CallbackSub")
 If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubCheck: "&@error&":"&@extended)
 
 ; main/sub process both should call shutdown before exit

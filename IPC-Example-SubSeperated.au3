@@ -13,7 +13,7 @@
 Global $bRun = True
 
 ; check if the call is a sub process and start the respective function
-Local $hSubProcess = __IPC_SubCheck("_SubProcess", Default, "_CallbackSub", "_CallbackExit", $__IPC_LOG_INFO)
+Global $hSubProcess = __IPC_SubCheck("_SubProcess", Default, "_CallbackSub", "_CallbackExit", $__IPC_LOG_INFO)
 If @error Then
 	__IPC_Log($__IPC_LOG_ERROR, "__IPC_SubCheck: "&@error&":"&@extended)
 ElseIf $hSubProcess=0 Then
