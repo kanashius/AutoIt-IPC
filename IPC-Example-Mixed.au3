@@ -29,7 +29,7 @@ Func _MainProcess()
 	WEnd
 	ConsoleWrite("Prepare second process"&@crlf)
 	Sleep(1000) ; looking at the logs, it shows, that the server is stopped, while no subprocess is running
-	Local $hProcess = __IPC_StartProcess("_CallbackMain", "11")
+	$hProcess = __IPC_StartProcess("_CallbackMain", "11")
 	; wait for the sub process to finish
 	While ProcessExists(__IPC_SubGetPID($hProcess)) And Sleep(10)
 	WEnd

@@ -343,8 +343,8 @@ Func __IPC_SubCheck($sFunctionSub, $sFunctionMain = Default, $sCallback = Defaul
 	Local $iPort = Default, $hProcess = Default
 	If UBound($CmdLine)>=4 Then
 		If $CmdLine[1]=$__IPC_PARAM_CONNECT Then
-			Local $iPort = Int($CmdLine[2])
-			Local $hProcess = Int($CmdLine[3])
+			$iPort = Int($CmdLine[2])
+			$hProcess = Int($CmdLine[3])
 		EndIf
 		Local $arCmdLine[UBound($CmdLine)-3]
 		$arCmdLine[0] = UBound($arCmdLine)-1
@@ -660,7 +660,7 @@ Func __IPC__ServerStart()
 	Local $iPort = $__IPC__Data.mServer.iMainStartPort
 	Local $iListen = -1
 	While True
-		Local $iListen = TCPListen("127.0.0.1", $iPort)
+		$iListen = TCPListen("127.0.0.1", $iPort)
 		If @error=1 Then Return SetError(2, 0, False)
 		If $iListen>=0 Then ExitLoop
 		$iPort+=1
@@ -874,7 +874,7 @@ Func __IPC__ProcessMessages()
 	Next
 	__IPC_Log($__IPC_LOG_TRACE, "Do process __IPC__ProcessMessages")
 	; process data from socket
-	Local $arSockets = MapKeys($__IPC__Data.mConnects)
+	$arSockets = MapKeys($__IPC__Data.mConnects)
 	__IPC_Log($__IPC_LOG_TRACE, "Do process __IPC__ProcessMessages with "&UBound($arSockets)&" sockets")
 	For $i=0 to UBound($arSockets)-1 Step 1
 		__IPC__ProcessMessagesAtSocket($arSockets[$i])
