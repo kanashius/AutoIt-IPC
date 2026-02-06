@@ -61,7 +61,7 @@ Func _CallbackMain($hProcess, $data, $iCmd = Default)
 	EndSwitch
 EndFunc
 
-Func _SubProcess($hSubProcess)
+Func _SubProcess()
 	Local $iTotalItems = 10
 	If UBound($CmdLine)>1 Then $iTotalItems = Int($CmdLine[1])
 	__IPC_SubSend("Start processing items") ; send data without a command

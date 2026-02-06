@@ -96,7 +96,6 @@ Func __IPC_StartUp($iLogLevel = $__IPC_LOG_INFO, $iMainPullRate = Default, $iMai
 	If Not IsInt($iLogLevel) Or $iLogLevel<0 Or $iLogLevel>$__IPC_LOG_TRACE Then Return SetError(1, 1, False)
 	If Not IsInt($iMainPullRate) Or $iMainPullRate<=1 Then Return SetError(1, 2, False)
 	If Not IsInt($iMainPort) Or $iMainPort<1024 Or $iMainPort>65535 Then Return SetError(1, 3, False)
-	Local $iTypeBefore = 0
 	If Not MapExists($__IPC__Data, "iLogLevel") Then $__IPC__Data.iLogLevel = $iLogLevel
 	$__IPC__Data.iStartUp = TCPStartup()
 	Local $mConnects[]
