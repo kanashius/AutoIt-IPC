@@ -34,7 +34,7 @@ Func _CallbackMain($hProcess, $data)
 	ConsoleWrite("Data from ["&$hProcess&"]: "&$data&@crlf)
 EndFunc
 
-Func _SubProcess($hSubProcess)
+Func _SubProcess()
 	; send data to the main process
 	__IPC_SubSend("Starting")
 	Sleep(Random(10, 1000, 1)) ; wait random time
