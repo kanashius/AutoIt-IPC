@@ -5,8 +5,7 @@
 
 	 Script Function:
 		Example script for the IPC InterProcessCommunication UDF.
-		This example shows how sub processes can be started and stopped through
-		user interaction.
+		This example shows how to manually handle data between the processes.
 
 #ce ----------------------------------------------------------------------------
 #include "IPC.au3"
@@ -15,8 +14,12 @@
 Global Const $iCOMMAND_TEST = 1, $iCOMMAND_UNKNOWN = 2, $iCOMMAND_PROGRESS = 3
 Global $mMainGui[] ; just a map for all ctrl variables to avoid to many global variables
 
+; make sure main process pullrate is 0 to disable automatic data pulling
+__IPC_StartUp($__IPC_LOG_INFO, 0)
+
 ; check if the call is a sub process and start the respective function
-__IPC_SubCheck("_SubProcess", "_MainProcess", "_CallbackSub", "_CallbackSubClose")
+; make sure sub process pullrate is 0 to disable automatic data pulling
+Global $hProcess = __IPC_SubCheck("_SubProcess", "_MainProcess", "_CallbackSub", "_CallbackSubClose", $__IPC_LOG_INFO, 0)
 If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubCheck: "&@error&":"&@extended)
 
 ; main/sub process both should call shutdown before exit
@@ -28,15 +31,17 @@ Func _MainProcess()
 	Local Static $hSubProcessLast = 0
 	Local $iWidth = 800, $iHeight = 600, $iCtrlHeight = 25, $iSpace = 5
 	$mMainGui.hGui = GUICreate("Example IPC", $iWidth, $iHeight)
-	Local $iButtonWidth = ($iWidth-3*$iSpace)/2
+	Local $iButtonWidth = ($iWidth-4*$iSpace)/3
 	$mMainGui.idButtonStart = GUICtrlCreateButton("Start subprocess", $iSpace, $iSpace, $iButtonWidth, $iCtrlHeight)
 	$mMainGui.idButtonStop = GUICtrlCreateButton("Stop subprocess", $iSpace*2+$iButtonWidth, $iSpace, $iButtonWidth, $iCtrlHeight)
+	$mMainGui.idButtonPause = GUICtrlCreateButton("Pause handling", $iSpace*3+$iButtonWidth*2, $iSpace, $iButtonWidth, $iCtrlHeight)
 	Local $iTop = $iCtrlHeight+$iSpace*2
 	$mMainGui.idProgress = GUICtrlCreateProgress($iSpace, $iTop, $iWidth-2*$iSpace, $iCtrlHeight)
 	$iTop += $iCtrlHeight+$iSpace*2
 	$mMainGui.idEdit = GUICtrlCreateEdit("", $iSpace, $iTop, $iWidth-2*$iSpace, $iHeight-$iTop-$iSpace, BitOR($ES_READONLY, $ES_AUTOVSCROLL, $ES_AUTOHSCROLL))
 	GUISetState()
 
+	Local $bPauseProcessHandling = False
 	While True
 		Switch GUIGetMsg()
 			Case -3
@@ -44,10 +49,23 @@ Func _MainProcess()
 			Case $mMainGui.idButtonStart
 				GUICtrlSetData($mMainGui.idEdit, "")
 				GUICtrlSetData($mMainGui.idProgress, 0)
-				$hSubProcessLast = __IPC_StartProcess("_CallbackMain", "11", "_CallbackSubProcessEnds")
+				$hSubProcessLast = __IPC_StartProcess("_CallbackMain", "100", "_CallbackSubProcessEnds")
 			Case $mMainGui.idButtonStop
 				If $hSubProcessLast<>0 Then __IPC_ProcessStop($hSubProcessLast)
+			Case $mMainGui.idButtonPause
+				$bPauseProcessHandling = Not $bPauseProcessHandling
+				If $bPauseProcessHandling Then GUICtrlSetData($mMainGui.idButtonPause, "Resume handling")
+				If Not $bPauseProcessHandling Then GUICtrlSetData($mMainGui.idButtonPause, "Pause handling")
 		EndSwitch
+		If Not $bPauseProcessHandling Then
+			If $hProcess=0 Then ; check if script running as main/sub process
+				; handle incoming data at the main process, manual pulling
+				__IPC_MainProcessing()
+			Else
+				; handle incoming data at the sub process, manual pulling
+				__IPC_SubProcessing()
+			EndIf
+		EndIf
 	WEnd
 EndFunc
 
@@ -77,7 +95,7 @@ EndFunc
 
 ; the sub process main method, registered in __IPC_SubCheck to be called when the script is running as a sub process
 Func _SubProcess($hSubProcess)
-	Local $iTotalItems = 20
+	Local $iTotalItems = 10
 	If UBound($CmdLine)>1 Then $iTotalItems = Int($CmdLine[1])
 	__IPC_SubSend("Start processing items") ; send data without a command
 	For $i=0 to $iTotalItems-1

@@ -5,6 +5,8 @@
 
 	 Script Function:
 		Example script for the IPC InterProcessCommunication UDF.
+		This example shows how commands can be sent and received.
+		This includes commands with additional data.
 
 #ce ----------------------------------------------------------------------------
 #include "IPC.au3"
@@ -12,14 +14,15 @@
 Global Const $iCOMMAND_START = 1, $iCOMMAND_END = 2, $iCOMMAND_PROGRESS = 3, $iCOMMAND_UNKNOWN = 4
 
 ; check if the call is a sub process and start the respective function
-Local $hSubProcess = __IPC_SubCheck("_SubProcess", "_MainProcess")
+__IPC_SubCheck("_SubProcess", "_MainProcess")
 If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubCheck: "&@error&":"&@extended)
+
 ; main/sub process both should call shutdown before exit
 __IPC_Shutdown()
 Exit
-
+; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
+; the main process main method, registered in __IPC_SubCheck to be called when the script is running as main process (no sub process command line arguments detected)
 Func _MainProcess()
-
 	; start a sub process calling the same script.
 	; the _CallbackMain method is called for messages received from the sub process
 	; 100 is the parameter provided to the sub process (total items)
@@ -29,8 +32,9 @@ Func _MainProcess()
 	WEnd
 EndFunc
 
-Func _CallbackMain($hProcess, $data, $iCmd)
-	; $hProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
+; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
+Func _CallbackMain($hSubProcess, $data, $iCmd)
+	; $hSubProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
 	; $data can be a string or binary data, depending on the data sent by the sub process
 	; $iCmd contains the command send by the server
 	Switch $iCmd
@@ -48,6 +52,7 @@ Func _CallbackMain($hProcess, $data, $iCmd)
 	EndSwitch
 EndFunc
 
+; the sub process main method, registered in __IPC_SubCheck to be called when the script is running as a sub process
 Func _SubProcess($hSubProcess)
 	Local $iTotalItems = 10
 	If UBound($CmdLine)>1 Then $iTotalItems = Int($CmdLine[1])

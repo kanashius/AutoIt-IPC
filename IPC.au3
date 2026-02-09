@@ -18,6 +18,7 @@
 ; __IPC_StartProcess
 ; __IPC_SubGetPID
 ; __IPC_SubCheck
+; __IPC_SubConnect
 ; __IPC_SubSend
 ; __IPC_MainSend
 ; __IPC_ProcessStop
@@ -62,9 +63,10 @@ Global $__IPC__Data[]
 ; #FUNCTION# ====================================================================================================================
 ; Name ..........: __IPC_StartUp
 ; Description ...: StartUp of the ICP UDF initializing required variables. Must be called before using other UDF functions.
-; Syntax ........: __IPC_StartUp([$iLogLevel = $__IPC_LOG_INFO[, $iMainPullRate = Default[, $iMainPort = Default]]])
+; Syntax ........: __IPC_StartUp([$iLogLevel = $__IPC_LOG_INFO[, $iMainPullRate = Default[, $iMaxReceiveCount = Default[, $iMainPort = Default]]]])
 ; Parameters ....: $iLogLevel             - [optional] Default: $__IPC_LOG_INFO. All logging equal or lower to the level will be shown.
 ;                  $iMainPullRate         - [optional] Default: 100 ms. How often the main process looks for new data.
+;                  $iMaxReceiveCount      - [optional] Default: Default. Unlimited, however much data can be received.
 ;                  $iMainPort             - [optional] Default: 40001. The port to start looking for an open port for the TCPServer.
 ; Return values .: True on success.
 ; Author ........: Kanashius
@@ -82,6 +84,11 @@ Global $__IPC__Data[]
 ;                 and try to listen at that port. If it is already bound, the port will increase, until a free port is found.
 ;                 If none is found, __IPC_StartProcess will return an error (when the TCPServer is started).
 ;
+;                 $iMaxReceiveCount can be set to limit the number of calls to TCPRecv, receiving $__IPC_MaxByteRecv bytes of data.
+;                 This can be useful, if large amount of data are sent in a short time, to avoid the main process from freezing.
+;                 Together with manual handling of data (see $iMainPullRate), this can be used to ensure that the main process does not freeze.
+;                 $iMaxReceiveCount resets for every sub process => every sub process gets pulled $iMaxReceiveCount times.
+;
 ;                 Errors:
 ;                 1 - Parameter not valid (@extended: 1 - $iLogLevel, 2 - $iMainPullRate, 3 - $iMainPort)
 ;                 2 - __IPC_StartUp was already called, call __IPC_Shutdown first
@@ -89,30 +96,38 @@ Global $__IPC__Data[]
 ; Link ..........:
 ; Example .......: No
 ; ===============================================================================================================================
-Func __IPC_StartUp($iLogLevel = $__IPC_LOG_INFO, $iMainPullRate = Default, $iMainPort = Default)
+Func __IPC_StartUp($iLogLevel = $__IPC_LOG_INFO, $iMainPullRate = Default, $iMaxReceiveCount = Default, $iMainPort = Default)
+	; handle parameters
 	If Not UBound(MapKeys($__IPC__Data))=0 Then Return SetError(2, 0, False)
 	If $iMainPullRate = Default Then $iMainPullRate = $__IPC_MainPullRate
 	If $iMainPort = Default Then $iMainPort = $__IPC_Port
 	If Not IsInt($iLogLevel) Or $iLogLevel<0 Or $iLogLevel>$__IPC_LOG_TRACE Then Return SetError(1, 1, False)
-	If Not IsInt($iMainPullRate) Or $iMainPullRate<=1 Then Return SetError(1, 2, False)
-	If Not IsInt($iMainPort) Or $iMainPort<1024 Or $iMainPort>65535 Then Return SetError(1, 3, False)
-	Local $iTypeBefore = 0
+	If Not IsInt($iMainPullRate) Or $iMainPullRate<0 Then Return SetError(1, 2, False)
+	If Not $iMaxReceiveCount=Default And Not IsInt($iMaxReceiveCount) And Not $iMaxReceiveCount>=0 Then Return SetError(1, 3, False)
+	If Not IsInt($iMainPort) Or $iMainPort<1024 Or $iMainPort>65535 Then Return SetError(1, 4, False)
 	If Not MapExists($__IPC__Data, "iLogLevel") Then $__IPC__Data.iLogLevel = $iLogLevel
+	; init tcp
 	$__IPC__Data.iStartUp = TCPStartup()
+	$__IPC__Data.iMaxReceiveCount = $iMaxReceiveCount ; how often tcprecv is called during processing, if more data is available
+	; init socket map
 	Local $mConnects[]
 	$__IPC__Data.mConnects = $mConnects
+	; init server data map
 	Local $mServer[], $mProcesses[]
-	$mServer.mProcesses = $mProcesses
+	$mServer.mProcesses = $mProcesses ; all started processes are stored here
 	$mServer.iMainPullRate = $iMainPullRate
 	$mServer.iMainStartPort = $iMainPort
-	$mServer.iListen = Default
-	$mServer.iPort = Default
-	$mServer.iOpenProcesses = 0
+	$mServer.iListen = Default ; the tcplisten handle
+	$mServer.iPort = Default ; the actually used port
+	$mServer.iOpenProcesses = 0 ; the number of processes started, but not yet successfully identified at the socket
+                                ; ($__IPC_MSG_CONNECT with $hProcess to assign the socket to the process)
 	$__IPC__Data.mServer = $mServer
+	; init client data map
 	Local $mClient[]
 	$mClient.iPullRate = $__IPC_SubPullRate
-	$mClient.iSocket = Default
-	$mClient.sCallback = Default
+	$mClient.iSocket = Default ; the subprocess tcp socket
+	$mClient.sCallback = Default ; the callback of the sub process for message handling
+	$mClient.sExitCallback = Default ; the callback called when the connection to the main process is closed/lost
 	$__IPC__Data.mClient = $mClient
 	__IPC_Log($__IPC_LOG_INFO, "IPC started")
 	Return True
@@ -132,19 +147,21 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC_Shutdown()
-	If UBound(MapKeys($__IPC__Data))>0 Then ; startup was called
-		Local $arProcesses = MapKeys($__IPC__Data.mServer.mProcesses)
-		For $i=0 To UBound($arProcesses)-1
-			__IPC__ServerProcessRemove($arProcesses[$i], True)
-		Next
-		__IPC__SubDisconnect()
-		If MapExists($__IPC__Data, "iStartUp") And $__IPC__Data.iStartUp=1 Then TCPShutdown()
-		Local $mData[]
-		$__IPC__Data = $mData
-		__IPC_Log($__IPC_LOG_INFO, "IPC shutdown")
-		Return True
-	EndIf
-	Return False
+	If UBound(MapKeys($__IPC__Data))=0 Then Return False ; startup was not called or shutdown was already called
+	; disconnect from all processes and send them the message to terminate
+	Local $arProcesses = MapKeys($__IPC__Data.mServer.mProcesses)
+	For $i=0 To UBound($arProcesses)-1
+		__IPC__ServerProcessRemove($arProcesses[$i], True)
+	Next
+	; disconnect if it is a subprocess (main process happens nothing)
+	__IPC__SubDisconnect()
+	; shutdown tcp if it was started successfully
+	If MapExists($__IPC__Data, "iStartUp") And $__IPC__Data.iStartUp=1 Then TCPShutdown()
+	; reset data map
+	Local $mData[]
+	$__IPC__Data = $mData
+	__IPC_Log($__IPC_LOG_INFO, "IPC shutdown")
+	Return True
 EndFunc
 
 ; #FUNCTION# ====================================================================================================================
@@ -172,6 +189,7 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC_GetScriptExecutable($sScriptPath)
+	; handle $sScriptPath, if it is provided without the extension => autocomplete
 	If Not FileExists($sScriptPath) Then
 		If FileExists($sScriptPath&".au3") Then
 			$sScriptPath = $sScriptPath&".au3"
@@ -181,6 +199,7 @@ Func __IPC_GetScriptExecutable($sScriptPath)
 			Return SetError(1, 1, False)
 		EndIf
 	EndIf
+	; check the extension and return the desired executable (with arguments)
 	Local $sExt = StringRight($sScriptPath, 4)
 	If $sExt = ".au3" Then Return '"'&@AutoItExe&'" /AutoIt3ExecuteScript "'&$sScriptPath&'"'
 	If $sExt = ".exe" Then Return $sScriptPath
@@ -198,11 +217,11 @@ EndFunc
 ;                  $sWorkingDir       - [optional] Default: the script directory. The working dir for the subprocess.
 ;                  $show              - [optional] Default: @SW_HIDE. See function: "Run".
 ;                  $opt_flag          - [optional] Default: $STDOUT_CHILD+$STDERR_CHILD. See function: "Run".
-; Return values .: The $hProcess of the started subprocess. 0 on failure.
+; Return values .: The $hSubProcess of the started subprocess. 0 on failure.
 ; Author ........: Kanashius
 ; Modified ......:
 ; Remarks .......:
-;                 $sCallback must be a function with 2 or 3 parameters ($hProcess, $data, $iCmd = Default). Depending on the usage of __IPC_SubSend in the sub process.
+;                 $sCallback must be a function with 2 or 3 parameters ($hSubProcess, $data, $iCmd = Default). Depending on the usage of __IPC_SubSend in the sub process.
 ;                 If __IPC_SubSend sends commands, the function must have 3 parameters. Otherwise 2 are sufficient.
 ;                 $iCmd is an integer and $data is either a string or binary data, depending on __IPC_SubSend.
 ;
@@ -218,16 +237,19 @@ EndFunc
 ;                 Errors:
 ;                 1 - Parameter invalid (@extended: 1 - $sCallback, 2 - $arguments, 3 - $sDoneCallback, 4 - $sExecutable, 5 - $sWorkingDir, 6 - $show, 7 - $opt_flag)
 ;                 100 - Calling __IPC__ServerStart failed. @extended contains the @error of__IPC__ServerStart
+;                 200 - Error creating process handle
 ;                 ? - Look at possible @error/@extended from Run()
 ; Related .......:
 ; Link ..........:
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC_StartProcess($sCallback = Default, $arguments = Default, $sDoneCallback = Default, $sExecutable = Default, $sWorkingDir = "", $show = @SW_HIDE, $opt_flag = BitOR($STDOUT_CHILD, $STDERR_CHILD))
+	; start the main process server, if it is not running already
 	If Not __IPC__ServerIsRunning() Then
 		__IPC__ServerStart()
 		If @error Then Return SetError(100, @error, 0)
 	EndIf
+	; handle all parameters
 	If $sExecutable=Default Then $sExecutable = __IPC_GetScriptExecutable(@ScriptFullPath)
 	If $sCallback<>Default And Not IsFunc(Execute($sCallback)) Then Return SetError(1, 1, -1)
 	If $arguments<>Default And Not IsString($arguments) And Not IsArray($arguments) Then Return SetError(1, 2, 0)
@@ -236,7 +258,7 @@ Func __IPC_StartProcess($sCallback = Default, $arguments = Default, $sDoneCallba
 	If Not IsString($sWorkingDir) Then Return SetError(1, 5, 0)
 	If $show<>@SW_SHOW And $show<>@SW_HIDE And $show<>@SW_MINIMIZE And $show<>@SW_MAXIMIZE Then Return SetError(1, 6, 0)
 	If Not IsInt($opt_flag) Then Return SetError(1, 7, 0)
-	; create process handle
+	; create process data
 	Local $mProcess[]
 	$mProcess.bStdErr = (BitAND($opt_flag, $STDERR_CHILD)?(True):(False))
 	$mProcess.bStdOut = ((BitAND($opt_flag, $STDOUT_CHILD) Or BitAND($opt_flag, $STDERR_MERGED))?(True):(False))
@@ -244,7 +266,9 @@ Func __IPC_StartProcess($sCallback = Default, $arguments = Default, $sDoneCallba
 	$mProcess.bWaitForSocket = True
 	$mProcess.sCallback = $sCallback
 	$mProcess.sExitCallback = $sDoneCallback
+	; create process handle
 	Local $iProcess = MapAppend($__IPC__Data.mServer.mProcesses, $mProcess)
+	If @error Then Return SetError(200, 0, 0)
 	Local $hProcess = __IPC__ProcessIdToHandle($iProcess)
 	; create arguments
 	Local $sArguments = $__IPC_PARAM_CONNECT&" "&$__IPC__Data.mServer.iPort&" "&$hProcess
@@ -257,12 +281,16 @@ Func __IPC_StartProcess($sCallback = Default, $arguments = Default, $sDoneCallba
 	EndIf
 	__IPC_Log($__IPC_LOG_INFO, "Start process: "&$sExecutable)
 	__IPC_Log($__IPC_LOG_DEBUG, @TAB&" with arguments: "&$sArguments)
+	; start the sub process
 	Local $sCmd = $sExecutable&" "&$sArguments
 	Local $iPID = Run($sCmd, $sWorkingDir, $show, $opt_flag)
 	Local $iError = @error, $iExtended = @extended
+	; save additional process information
 	$__IPC__Data["mServer"]["mProcesses"][$iProcess]["iPID"] = $iPID
 	$__IPC__Data["mServer"]["mProcesses"][$iProcess]["hProcess"] = $hProcess
+	; add one process to the number of processes started, but not yet successfully connected ($__IPC_MSG_CONNECT with $hProcess)
 	$__IPC__Data["mServer"]["iOpenProcesses"] += 1
+	; remove all process data, if the startup failed
 	If $iError Then
 		__IPC__ServerProcessRemove($iProcess, True)
 		__IPC_Log($__IPC_LOG_ERROR, "Failed process start: "&$sCmd)
@@ -302,7 +330,7 @@ EndFunc
 ;                  $sExitCallback        - [optional] Default: no callback. The callback for the disconnect/close command from the main process.
 ;                  $iLogLevel            - [optional] Default: $__IPC_LOG_INFO. All logging equal or lower to the level will be shown.
 ;                  $iPullRate            - [optional] Default: 100 ms. How often the sub process looks for new data.
-; Return values .: True on success.
+; Return values .: The sub process handle on success, 0 otherwise.
 ; Author ........: Kanashius
 ; Modified ......:
 ; Remarks .......: $sFunctionSub must be a function with 1 parameter ($hSubProcess). It is called, when the script is executed as sub process.
@@ -324,28 +352,29 @@ EndFunc
 ;                  function must be called manually.
 ;
 ;                  Errors:
-;                  1 - Parameter invalid (@extended: 1 - $sFunctionSub, 2 - $sFunctionMain, 3 - $sCallback, 4 - $sExitCallback, 5 - $iLogLevel, 6 - $iPullRate)
-;                  2 - Connect to main process failed (TCPConnect)
-;                  3 - __IPC_StartUp failed. @extended contains the error from __IPC_StartUp.
-;                  4 - Calling $sFunctionSub failed.
-;                  5 - Calling $sFunctionMain failed.
+;                  1 - Parameter invalid (@extended: 1 - $sFunctionSub, 2 - $sFunctionMain, 3 - $sCallback, 4 - $sExitCallback, 5 - $iLogLevel, 6 - $iPullRate, 7 - $iMainPullRate)
+;                  2 - __IPC_StartUp failed. @extended contains the error from __IPC_StartUp.
+;                  3 - Connect to main process failed (TCPConnect)
+;                  4 - Failed to sent the connect command to the main process with tcp
+;                  5 - Calling $sFunctionSub failed.
+;                  6 - Calling $sFunctionMain failed.
+;                  7 - Parameter in commandline invalid (@extended: 1 - iPort, 2 - hProcess)
 ; Related .......:
 ; Link ..........:
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC_SubCheck($sFunctionSub, $sFunctionMain = Default, $sCallback = Default, $sExitCallback = Default, $iLogLevel = $__IPC_LOG_INFO, $iPullRate = Default)
+	; handle parameters
 	If Not IsFunc(Execute($sFunctionSub)) Then Return SetError(1, 1, 0)
 	If $sFunctionMain<>Default And Not IsFunc(Execute($sFunctionMain)) Then Return SetError(1, 2, 0)
-	If $sCallback<>Default And Not IsFunc(Execute($sCallback)) Then Return SetError(1, 3, 0)
-	If $sExitCallback<>Default And Not IsFunc(Execute($sExitCallback)) Then Return SetError(1, 4, 0)
-	If $iPullRate = Default Then $iPullRate = $__IPC_SubPullRate
-	If Not IsInt($iLogLevel) Or $iLogLevel<0 Or $iLogLevel>$__IPC_LOG_TRACE Then Return SetError(1, 5, False)
-	If Not IsInt($iPullRate) Or $iPullRate<=1 Then Return SetError(1, 6, False)
+	; other parameters will be checked/handled in __IPC_SubConnect
+
+	; check if the script was started with commandline argument $__IPC_PARAM_CONNECT and the corresponding port and process number
 	Local $iPort = Default, $hProcess = Default
 	If UBound($CmdLine)>=4 Then
 		If $CmdLine[1]=$__IPC_PARAM_CONNECT Then
-			Local $iPort = Int($CmdLine[2])
-			Local $hProcess = Int($CmdLine[3])
+			$iPort = Int($CmdLine[2])
+			$hProcess = Int($CmdLine[3])
 		EndIf
 		Local $arCmdLine[UBound($CmdLine)-3]
 		$arCmdLine[0] = UBound($arCmdLine)-1
@@ -354,31 +383,81 @@ Func __IPC_SubCheck($sFunctionSub, $sFunctionMain = Default, $sCallback = Defaul
 		Next
 		$CmdLine = $arCmdLine
 	EndIf
-	If $iPort<>Default And $hProcess<>Default Then
-		__IPC_StartUp($iLogLevel)
-		If @error Then Return SetError(3, @error, False)
-		__IPC_Log($__IPC_LOG_INFO, "Connect: "&$iPort&" >> "&$hProcess)
-		Local $iSocket = TCPConnect("127.0.0.1", $iPort)
-		If @error Then
-			__IPC_Log($__IPC_LOG_ERROR, "Could not connect to main process: "&$iPort&" > "&$hProcess)
-			Return SetError(2, 0, 0)
+	; no subprocess detected
+	If $iPort=Default Or $hProcess=Default Then
+		If $sFunctionMain<>Default Then
+			__IPC_StartUp($iLogLevel)
+			If @error And @error<>2 Then Return SetError(2, @error, False) ; ignore the "startup already called" message, otherwise return the startup error
+			Call($sFunctionMain)
+			If @error = 0xDEAD And @extended = 0xBEEF Then Return SetError(6, 0, 0)
 		EndIf
-		$__IPC__Data["mClient"]["iSocket"] = $iSocket
-		$__IPC__Data["mClient"]["sCallback"] = $sCallback
-		$__IPC__Data["mClient"]["sExitCallback"] = $sExitCallback
-		$__IPC__Data["mClient"]["iPullRate"] = $iPullRate
-		If $iPullRate>0 And $__IPC__Data.mClient.sCallback<>Default Then AdlibRegister("__IPC_SubProcessing", $__IPC__Data.mClient.iPullRate)
-		TCPSend($iSocket, Binary($__IPC_MSG_CONNECT)&Binary($hProcess))
-		__IPC__AddSocket($iSocket, $__IPC_CONN_TO_MAIN)
-		Call($sFunctionSub, $hProcess)
-		If @error = 0xDEAD And @extended = 0xBEEF Then Return SetError(4, 0, 0)
-	ElseIf $sFunctionMain<>Default Then
-		__IPC_StartUp($iLogLevel)
-		If @error Then Return SetError(3, @error, False)
-		Call($sFunctionMain)
-		If @error = 0xDEAD And @extended = 0xBEEF Then Return SetError(5, 0, 0)
+		Return 0
 	EndIf
-	Return True
+	Local $hSubProcess = __IPC_SubConnect($iPort, $hProcess, $sCallback, $sExitCallback, $iLogLevel, $iPullRate)
+	If @error=1 And @extended>2 Then Return SetError(1, @extended, 0)
+	If @error=1 Then Return SetError(7, @extended, 0)
+	If @error Then Return SetError(@error, @extended, 0)
+	Call($sFunctionSub, $hSubProcess)
+	If @error = 0xDEAD And @extended = 0xBEEF Then Return SetError(5, 0, 0)
+	Return $hSubProcess
+EndFunc
+
+; #FUNCTION# ====================================================================================================================
+; Name ..........: __IPC_SubConnect
+; Description ...: Connect to the main process.
+; Syntax ........: __IPC_SubConnect($iPort, $hProcess)
+; Parameters ....: $iPort         - the port the main process is listening at.
+;                  $hProcess      - the hSubProcessHandle of this script.
+;                  $sCallback            - [optional] Default: no callback. The callback for the sub process messages.
+;                  $sExitCallback        - [optional] Default: no callback. The callback for the disconnect/close command from the main process.
+;                  $iLogLevel            - [optional] Default: $__IPC_LOG_INFO. All logging equal or lower to the level will be shown.
+;                  $iPullRate            - [optional] Default: 100 ms. How often the sub process looks for new data.
+; Return values .: The sub process handle on success, 0 otherwise.
+; Author ........: Kanashius
+; Modified ......:
+; Remarks .......: $iPort must be and integer >=1024 and <65535.
+;                  $hProcess must be an integer >=1 and must correspond to the process handle at the main process.
+;
+;                  For more information on $sCallback, $sExitCallback, $iLogLevel and $iPullRate see __IPC_SubCheck.
+;
+;                  Errors:
+;                  1 - Parameter invalid (@extended: 1 - $iPort, 2 - $hProcess)
+;                  2 - Connect to main process failed (TCPConnect)
+;                  3 - __IPC_StartUp failed. @extended contains the error from __IPC_StartUp.
+;                  4 - Failed to sent the connect command to the main process with tcp
+; Related .......:
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __IPC_SubConnect($iPort, $hProcess, $sCallback = Default, $sExitCallback = Default, $iLogLevel = $__IPC_LOG_INFO, $iPullRate = Default)
+	If Not IsInt($iPort) Or $iPort<1024 Or $iPort>65535 Then Return SetError(1, 1, 0)
+	If Not IsInt($hProcess) Or $hProcess<1 Then Return SetError(1, 2, 0)
+	If $sCallback<>Default And Not IsFunc(Execute($sCallback)) Then Return SetError(1, 3, 0)
+	If $sExitCallback<>Default And Not IsFunc(Execute($sExitCallback)) Then Return SetError(1, 4, 0)
+	If $iPullRate = Default Then $iPullRate = $__IPC_SubPullRate
+	If Not IsInt($iLogLevel) Or $iLogLevel<0 Or $iLogLevel>$__IPC_LOG_TRACE Then Return SetError(1, 5, False)
+	If Not IsInt($iPullRate) Or $iPullRate<0 Then Return SetError(1, 6, False)
+	; handle detected sub process
+	__IPC_StartUp($iLogLevel)
+	If @error And @error<>2 Then Return SetError(2, @error, 0) ; ignore the "startup already called" message, otherwise return the startup error
+	; connect to main process
+	__IPC_Log($__IPC_LOG_INFO, "Connect: "&$iPort&" >> "&$hProcess)
+	Local $iSocket = TCPConnect("127.0.0.1", $iPort)
+	If @error Then
+		__IPC_Log($__IPC_LOG_ERROR, "Could not connect to main process: "&$iPort&" > "&$hProcess)
+		Return SetError(3, 0, 0)
+	EndIf
+	; connect to the main process
+	TCPSend($iSocket, Binary($__IPC_MSG_CONNECT)&Binary($hProcess))
+	IF @error Then  Return SetError(4, @error, 0)
+	; save data for the connection
+	$__IPC__Data.mClient.iSocket = $iSocket
+	$__IPC__Data.mClient.sCallback = $sCallback
+	$__IPC__Data.mClient.sExitCallback = $sExitCallback
+	$__IPC__Data.mClient.iPullRate = $iPullRate
+	If $iPullRate>0 And $__IPC__Data.mClient.sCallback<>Default Then AdlibRegister("__IPC_SubProcessing", $__IPC__Data.mClient.iPullRate)
+	__IPC__AddSocket($iSocket, $__IPC_CONN_TO_MAIN)
+	Return $hProcess
 EndFunc
 
 ; #FUNCTION# ====================================================================================================================
@@ -427,8 +506,10 @@ EndFunc
 Func __IPC_MainSend($hProcess, $iCmdOrData, $data = Default)
 	Local $iProcess = __IPC__ProcessHandleToId($hProcess)
 	If @error Then Return SetError(1, 1, False)
+
 	Local $iSocket = $__IPC__Data.mServer.mProcesses[$iProcess].iSocket
 	If $iSocket=Default Then Return SetError(3, 0, False)
+
 	Local $bResult = __IPC__SendMsg($iSocket, $iCmdOrData, $data)
 	If @error=1 Then Return SetError(@error, @extended+1, $bResult)
 	If @error Then Return SetError(@error, @extended, $bResult)
@@ -453,6 +534,7 @@ EndFunc
 Func __IPC_ProcessStop($hProcess)
 	Local $iProcess = __IPC__ProcessHandleToId($hProcess)
 	If @error Then Return SetError(1, 1, False)
+
 	__IPC__SocketDisconnect($__IPC__Data.mServer.mProcesses[$iProcess].iSocket)
 	If @error Then Return SetError(2, @error, False)
 	Return True
@@ -461,7 +543,7 @@ EndFunc
 ; #FUNCTION# ====================================================================================================================
 ; Name ..........: __IPC_SubProcessing
 ; Description ...: Process messages for the sub process. Only call if the sub process pullrate $iPullRate was set to 0.
-; Syntax ........: __IPC_SubProcessing)
+; Syntax ........: __IPC_SubProcessing()
 ; Parameters ....:
 ; Return values .:
 ; Author ........: Kanashius
@@ -478,7 +560,7 @@ EndFunc
 ; #FUNCTION# ====================================================================================================================
 ; Name ..........: __IPC_MainProcessing
 ; Description ...: Process messages for the main process. Only call if the main process pullrate $iMainPullRate was set to 0.
-; Syntax ........: __IPC_MainProcessing)
+; Syntax ........: __IPC_MainProcessing()
 ; Parameters ....:
 ; Return values .:
 ; Author ........: Kanashius
@@ -514,9 +596,11 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC_Log($iLevel, $sMsg, $iError=Default, $iExtended = Default, $hSubProcess = Default, $iLine = @ScriptLineNumber)
+	; handle parameters
 	If Not IsInt($iLevel) Or $iLevel<0 Or $iLevel>$__IPC_LOG_TRACE Then Return SetError(1, 1, False)
 	If Not IsInt($iLine) Or $iLevel<0 Then Return SetError(1, 6, False)
 	If $iLevel>$__IPC__Data.iLogLevel Then Return False
+	; handle $iError and $iExtended
 	Local $sError = ""
 	If $iError<>Default And $iExtended<>Default Then
 		$sError = " [Error: "&$iError&", Extended: "&$iExtended&"]"
@@ -525,6 +609,7 @@ Func __IPC_Log($iLevel, $sMsg, $iError=Default, $iExtended = Default, $hSubProce
 	ElseIf $iExtended<>Default Then
 		$sError = " [Extended: "&$iExtended&"]"
 	EndIf
+	; create log prefix depending on log level
 	Local $sLevel
 	Switch $iLevel
 		Case $__IPC_LOG_FATAL
@@ -540,11 +625,16 @@ Func __IPC_Log($iLevel, $sMsg, $iError=Default, $iExtended = Default, $hSubProce
 		Case $__IPC_LOG_TRACE
 			$sLevel = "TRACE"
 	EndSwitch
-	If $hSubProcess<>Default Then
-		ConsoleWrite(">"&"Sub["&$hSubProcess&"] "&$sLevel&" ["&@YEAR&"/"&@MON&"/"&@MDAY&" "&@HOUR&":"&@MIN&":"&@SEC&"."&@MSEC&"] "&$sMsg&$sError&@crlf)
-	Else
-		ConsoleWrite(">"&$sLevel&" ["&@YEAR&"/"&@MON&"/"&@MDAY&" "&@HOUR&":"&@MIN&":"&@SEC&"."&@MSEC&"] "&$sMsg&$sError&@crlf)
-	EndIf
+	Local $arLines = StringSplit($sMsg, @CRLF, 3)
+	For $i=0 to UBound($arLines)-1 Step 1
+		If $hSubProcess<>Default Then
+			ConsoleWrite(">"&"Sub["&$hSubProcess&"] "&$sLevel&" ["&@YEAR&"/"&@MON&"/"&@MDAY&" "&@HOUR&":"&@MIN&":"&@SEC&"."&@MSEC&"] "&$arLines[$i])
+		Else
+			ConsoleWrite(">"&$sLevel&" ["&@YEAR&"/"&@MON&"/"&@MDAY&" "&@HOUR&":"&@MIN&":"&@SEC&"."&@MSEC&"] "&$arLines[$i])
+		EndIf
+		If $i=UBound($arLines)-1 Then ConsoleWrite($sError)
+		ConsoleWrite(@crlf)
+	Next
 	Return True
 EndFunc
 
@@ -566,19 +656,24 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__SendMsg($iSocket, $iCmdOrData, $data = Default)
+	; handle parameters
 	Local $bCmd = True
 	If $data=Default Then
 		$data = $iCmdOrData
 		$bCmd = False
 	EndIf
 	Local $iMsg = $__IPC_MSG_DATA
+	; check if data is a string
 	If Not IsBinary($data) Then
 		If Not IsString($data) Then $data = String($data)
 		$iMsg = $__IPC_MSG_DATA_STR
 		$data = StringToBinary($data, 2)
 	EndIf
+	; handle the cmd parameter
 	If $bCmd Then
+		; check cmd parameter if it is an integer
 		If Not IsInt($iCmdOrData) Then Return SetError(1, 1, False)
+		; prepend the command to the data
 		$data = Binary($iCmdOrData)&$data
 		If $iMsg=$__IPC_MSG_DATA Then
 			$iMsg = $__IPC_MSG_DATA_CMD
@@ -586,9 +681,12 @@ Func __IPC__SendMsg($iSocket, $iCmdOrData, $data = Default)
 			$iMsg = $__IPC_MSG_DATA_CMD_STR
 		EndIf
 	EndIf
+	; check the data length
 	Local $iLen = BinaryLen($data)
+	; send the message binary data length as integer first
 	TCPSend($iSocket, Binary($iMsg)&Binary($iLen))
 	If @error Then Return SetError(2, __IPC__SubDisconnect(True), False)
+	; send the data in $__IPC_MaxByteRecv sized packages
 	For $i=1 To $iLen Step $__IPC_MaxByteRecv
 		Local $bSend = BinaryMid($data, $i, $__IPC_MaxByteRecv)
 		TCPSend($iSocket, $bSend)
@@ -611,36 +709,39 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__SubDisconnect($bErr = False)
-	If $__IPC__Data.mClient.iSocket<>Default Then
-		If $bErr Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process lost.")
-		__IPC_Log($__IPC_LOG_DEBUG, "Close Client connection.")
-		Local $iSocket = $__IPC__Data.mClient.iSocket
-		TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
-		Local $bTimeOut = True
-		For $i=0 to 1000 ; timeout after 10 seconds
-			TCPSend($iSocket, Binary($__IPC_MSG_ACK))
-			If @error Then
-				$bTimeOut = False
-				ExitLoop
-			EndIf
-			Sleep(10)
-		Next
-		If $bTimeOut Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process did not close properly.")
-		TCPCloseSocket($__IPC__Data.mClient.iSocket)
-		$__IPC__Data.mClient.iPullRate = $__IPC_SubPullRate
-		$__IPC__Data.mClient.iSocket = Default
-		If $__IPC__Data.mClient.sCallback<>Default Then
-			If $__IPC__Data.mClient.iPullRate>0 Then AdlibUnRegister("__IPC_SubProcessing")
-			$__IPC__Data.mClient.sCallback = Default
+	If $__IPC__Data.mClient.iSocket=Default Then Return False ; not a sub process or already disconnected
+	If $bErr Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process lost.")
+	__IPC_Log($__IPC_LOG_DEBUG, "Close Client connection.")
+	; tell main process that sub process is disconnecting (ignore error => connection already lost)
+	Local $iSocket = $__IPC__Data.mClient.iSocket
+	TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
+	; wait for the connection to be closed => provides the main process with the opportunity to read all TCP/STD data
+	Local $bTimeOut = True
+	For $i=0 to 1000 ; timeout after 10 seconds
+		TCPSend($iSocket, Binary($__IPC_MSG_ACK))
+		If @error Then
+			$bTimeOut = False
+			ExitLoop
 		EndIf
-		If $__IPC__Data.mClient.sExitCallback<>Default Then
-			Call($__IPC__Data.mClient.sExitCallback)
-			$__IPC__Data.mClient.sExitCallback = Default
-		EndIf
-		__IPC_Log($__IPC_LOG_INFO, "Client connection closed.")
-		Return True
+		Sleep(10)
+	Next
+	If $bTimeOut Then __IPC_Log($__IPC_LOG_ERROR, "Connection to main process did not close properly.") ; disconnect took too long
+	TCPCloseSocket($__IPC__Data.mClient.iSocket)
+	; reset sub process
+	$__IPC__Data.mClient.iPullRate = $__IPC_SubPullRate
+	$__IPC__Data.mClient.iSocket = Default
+	; remove tcp message processing
+	If $__IPC__Data.mClient.sCallback<>Default Then
+		If $__IPC__Data.mClient.iPullRate>0 Then AdlibUnRegister("__IPC_SubProcessing")
+		$__IPC__Data.mClient.sCallback = Default
 	EndIf
-	Return False
+	; call the exit/close callback of the sub process, if desired
+	If $__IPC__Data.mClient.sExitCallback<>Default Then
+		Call($__IPC__Data.mClient.sExitCallback)
+		$__IPC__Data.mClient.sExitCallback = Default
+	EndIf
+	__IPC_Log($__IPC_LOG_INFO, "Client connection closed.")
+	Return True
 EndFunc
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
@@ -658,22 +759,23 @@ EndFunc
 ; ===============================================================================================================================
 Func __IPC__ServerStart()
 	If $__IPC__Data.mServer.iListen<>Default Then Return SetError(2, 0, False) ; server already open
+	; look for the next open port to listen to, starting with iMainStartPort
 	Local $iPort = $__IPC__Data.mServer.iMainStartPort
 	Local $iListen = -1
 	While True
-		Local $iListen = TCPListen("127.0.0.1", $iPort)
+		$iListen = TCPListen("127.0.0.1", $iPort)
 		If @error=1 Then Return SetError(2, 0, False)
 		If $iListen>=0 Then ExitLoop
 		$iPort+=1
 		If $iPort>65535 Then $iPort = 1024
 		If $iPort=$__IPC__Data.mServer.iMainStartPort-1 Then Return SetError(3, 0, False)
 	WEnd
-	If $iListen>0 Then
-		If $__IPC__Data.mServer.iMainPullRate>0 Then AdlibRegister("__IPC_MainProcessing", $__IPC__Data.mServer.iMainPullRate)
-		$__IPC__Data.mServer.iListen = $iListen
-		$__IPC__Data.mServer.iPort = $iPort
-		__IPC_Log($__IPC_LOG_INFO, "IPC Server listening at 127.0.0.1:"&$iPort)
-	EndIf
+	If $iListen<=0 Then Return False ; failed to open tcp connection
+	; save connection data and start listening for tcp/std data
+	If $__IPC__Data.mServer.iMainPullRate>0 Then AdlibRegister("__IPC_MainProcessing", $__IPC__Data.mServer.iMainPullRate)
+	$__IPC__Data.mServer.iListen = $iListen
+	$__IPC__Data.mServer.iPort = $iPort
+	__IPC_Log($__IPC_LOG_INFO, "IPC Server listening at 127.0.0.1:"&$iPort)
 	Return True
 EndFunc
 
@@ -709,10 +811,10 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__ServerStop()
-	If $__IPC__Data.mServer.iListen=Default Then Return SetError(2, 0, False)
+	If $__IPC__Data.mServer.iListen=Default Then Return SetError(2, 0, False) ; server not running
 	TCPCloseSocket($__IPC__Data.mServer.iListen)
 	$__IPC__Data.mServer.iListen = Default
-	If $__IPC__Data.mServer.iMainPullRate>0 Then AdlibUnRegister("__IPC_MainProcessing")
+	If $__IPC__Data.mServer.iMainPullRate>0 Then AdlibUnRegister("__IPC_MainProcessing") ; remove automatic message processing
 	__IPC_Log($__IPC_LOG_INFO, "IPC Server stopped")
 	Return True
 EndFunc
@@ -749,7 +851,7 @@ EndFunc
 ; Syntax ........: __IPC__ServerProcessStdOut($iProcess[, $bErr = False])
 ; Parameters ....: $iProcess         - the process id
 ;                  $bErr             - [optional] Default: False. True if stderr should be read. False for stdout.
-; Return values .:
+; Return values .: False on error.
 ; Author ........: Kanashius
 ; Modified ......:
 ; Remarks .......:
@@ -758,24 +860,23 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__ServerProcessLogStd($iProcess, $bErr = False)
-	If MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then
-		Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
-		Local $sData
-		If Not $bErr Then $sData = StdoutRead($mProcess.iPID)
-		If $bErr Then $sData = StderrRead($mProcess.iPID)
-		If @error Then Return SetError(2, 0, 0)
-		If @extended>0 Then
-			Local $arData = StringSplit($sData, @CRLF, 3)
-			For $i=0 To UBound($arData)-1
-				If $i=UBound($arData)-1 And StringLen($arData[$i])=0 Then ContinueLoop
-				If $bErr Then
-					__IPC_Log($__IPC_LOG_ERROR, $arData[$i], Default, Default, $mProcess.hProcess)
-				Else
-					__IPC_Log($__IPC_LOG_INFO, $arData[$i], Default, Default, $mProcess.hProcess)
-				EndIf
-			Next
+	If Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 1, True) ; process does not exists
+	; read process stdout/stderr
+	Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
+	Local $sData = $bErr?StderrRead($mProcess.iPID):StdoutRead($mProcess.iPID)
+	If @error Then Return SetError(2, 0, True)
+	If @extended<=0 Then Return True
+	; handle output by printing to console
+	Local $arData = StringSplit($sData, @CRLF, 3)
+	For $i=0 To UBound($arData)-1
+		If $i=UBound($arData)-1 And StringLen($arData[$i])=0 Then ContinueLoop
+		If $bErr Then
+			__IPC_Log($__IPC_LOG_ERROR, $arData[$i], Default, Default, $mProcess.hProcess)
+		Else
+			__IPC_Log($__IPC_LOG_INFO, $arData[$i], Default, Default, $mProcess.hProcess)
 		EndIf
-	EndIf
+	Next
+	Return True
 EndFunc
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
@@ -821,13 +922,13 @@ EndFunc
 ; ===============================================================================================================================
 Func __IPC__AddSocket($iSocket, $iType)
 	Local $mConn[]
-	$mConn.iType = $iType
+	$mConn.iType = $iType ; is the socket from main->sub process or from sub->main process
 	$mConn.iSocket = $iSocket
-	$mConn.iLastCommand = Default
-	$mConn.dataBuffer = Default
-	$mConn.iDataBufferSize = Default
-	$mConn.hProcess = Default
-	$mConn.iCommandBytes = Default
+	$mConn.iLastCommand = Default ; contains the last command
+	$mConn.dataBuffer = Default ; collects received data
+	$mConn.iDataBufferSize = Default ; size of $mConn.dataBuffer
+	$mConn.hProcess = Default ; only set for $__IPC_CONN_TO_SUB
+	$mConn.iCommandBytes = Default ; amount of bytes to receive before executing command $mConn.iLastCommand (only for commands with custom data with unknown size)
 	$__IPC__Data["mConnects"][$iSocket] = $mConn
 EndFunc
 
@@ -849,19 +950,21 @@ Func __IPC__ProcessMessages()
 	Local $arSockets = MapKeys($__IPC__Data.mConnects)
 	__IPC_Log($__IPC_LOG_TRACE, "Run __IPC__ProcessMessages with "&UBound($arSockets)&" sockets")
 	; read new data from socket
+	Local $iLoopCount = 0
 	For $i=0 to UBound($arSockets)-1 Step 1
 		Local $iSocket = $arSockets[$i]
 		Local $iTimeout = Opt("TCPTimeout", 0) ; disable 100ms timeout for TCPAccept
 		Local $bData = TCPRecv($iSocket, $__IPC_MaxByteRecv, 1)
 		Opt("TCPTimeout", $iTimeout) ; reset to old timeout for users
-		If @error Then
+		If @error Then ; connection lost
 			__IPC_Log($__IPC_LOG_ERROR, "Connection lost: "&$iSocket)
 			__IPC__SocketDisconnect($iSocket, True)
 			ContinueLoop
-		ElseIf BinaryLen($bData)=0 Then
+		ElseIf BinaryLen($bData)=0 Then ; no data received
 			__IPC_Log($__IPC_LOG_TRACE, "Nothing received: "&$iSocket)
 			ContinueLoop
 		EndIf
+		; put received data into the buffer
 		Local $iBinLen = BinaryLen($bData)
 		__IPC_Log($__IPC_LOG_TRACE, "Received: "&$iSocket&":"&$iBinLen&" >> "&$bData)
 		If $__IPC__Data["mConnects"][$iSocket]["dataBuffer"]=Default Then
@@ -871,7 +974,13 @@ Func __IPC__ProcessMessages()
 			$__IPC__Data["mConnects"][$iSocket]["dataBuffer"] &= $bData
 			$__IPC__Data["mConnects"][$iSocket]["iDataBufferSize"] += $iBinLen
 		EndIf
-		If $iBinLen>=$__IPC_MaxByteRecv Then $i-=1 ; more data may be available, maybe limit this to 10 tries
+		If $iBinLen>=$__IPC_MaxByteRecv And ($__IPC__Data.iMaxReceiveCount=Default Or $iLoopCount<$__IPC__Data.iMaxReceiveCount) Then
+			__IPC_Log($__IPC_LOG_TRACE, "Receive more data: "&$iSocket&" >> "&$iBinLen&" >> "&$iLoopCount)
+			$i-=1 ; more data may be available, maybe limit this to 10 tries
+			$iLoopCount += 1
+		Else
+			$iLoopCount = 0
+		EndIf
 	Next
 	__IPC_Log($__IPC_LOG_TRACE, "Do process __IPC__ProcessMessages")
 	; process data from socket
@@ -900,71 +1009,76 @@ Func __IPC__ProcessMessagesAtSocket($iSocket)
 	While MapExists($__IPC__Data.mConnects, $iSocket) And $__IPC__Data.mConnects[$iSocket]["iDataBufferSize"]>0
 		If $__IPC__Data.mConnects[$iSocket]["iLastCommand"]=Default Then
 			Local $bData = __IPC__SocketReadBytes($iSocket, 4)
+			If @error Then ExitLoop ; wait for more data to be received
 			If Not @error Then $__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = $bData
 		EndIf
 		Local $iCmd = $__IPC__Data.mConnects[$iSocket]["iLastCommand"]
 		Switch $iCmd
 			Case $__IPC_MSG_DATA, $__IPC_MSG_DATA_STR, $__IPC_MSG_DATA_CMD, $__IPC_MSG_DATA_CMD_STR
+				; check if the amount of message data bytes was already read, otherwise read them first
 				If $__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default Then
 					Local $bData = __IPC__SocketReadBytes($iSocket, 4)
-					If Not @error Then
-						$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Int($bData)
+					If @error Then ExitLoop ; wait for more data to be received
+					If Not @error Then $__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Int($bData)
+				EndIf
+				; read the specified amount of message data bytes
+				Local $bData = __IPC__SocketReadBytes($iSocket, $__IPC__Data.mConnects[$iSocket]["iCommandBytes"])
+				If @error Then ExitLoop ; wait for more data to be received
+				; Handle the first byte specifying the command if applicable
+				Local $iDataCommand = Default
+				If $iCmd = $__IPC_MSG_DATA_CMD Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then
+					$iDataCommand = Int(BinaryMid($bData, 1, 4))
+					$bData = BinaryMid($bData, 5)
+				EndIf
+				; handle string conversion, if a string was sent
+				If $iCmd = $__IPC_MSG_DATA_STR Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then $bData=BinaryToString($bData, 2)
+				; get the callback (if present) and the hProcess (if on main process and the message came from a sub process)
+				Local $sCallback = Default
+				Local $hProcess = Default
+				If $__IPC__Data.mConnects[$iSocket].iType = $__IPC_CONN_TO_MAIN Then
+					$sCallback = $__IPC__Data.mClient.sCallback
+				ElseIf $__IPC__Data.mConnects[$iSocket].iType = $__IPC_CONN_TO_SUB Then
+					$hProcess = $__IPC__Data.mConnects[$iSocket].hProcess
+					Local $iProcess = __IPC__ProcessHandleToId($hProcess)
+					If @error Then ContinueLoop ; should not happen, as long as the connection is there
+					$sCallback = $__IPC__Data.mServer.mProcesses[$iProcess].sCallback
+				EndIf
+				If $sCallback<>Default And $iDataCommand<>Default Then ; handle command message callback
+					__IPC_Log($__IPC_LOG_DEBUG, "MSG_DATA_CMD Received data: "&$iSocket&" >> "&$iDataCommand&" >> "&$bData)
+					If $hProcess<>Default Then
+						Call($sCallback, $hProcess, $bData, $iDataCommand)
+						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 3 parameters")
+					Else
+						Call($sCallback, $bData, $iDataCommand)
+						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
 					EndIf
-				Else
-					Local $bData = __IPC__SocketReadBytes($iSocket, $__IPC__Data.mConnects[$iSocket]["iCommandBytes"])
-					If Not @error Then
-						Local $iDataCommand = Default
-						If $iCmd = $__IPC_MSG_DATA_CMD Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then
-							$iDataCommand = Int(BinaryMid($bData, 1, 4))
-							$bData = BinaryMid($bData, 5)
-						EndIf
-						If $iCmd = $__IPC_MSG_DATA_STR Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then $bData=BinaryToString($bData, 2)
-						Local $sCallback = Default
-						Local $hProcess = Default
-						If $__IPC__Data.mConnects[$iSocket].iType = $__IPC_CONN_TO_MAIN Then
-							$sCallback = $__IPC__Data.mClient.sCallback
-						ElseIf $__IPC__Data.mConnects[$iSocket].iType = $__IPC_CONN_TO_SUB Then
-							$hProcess = $__IPC__Data.mConnects[$iSocket].hProcess
-							Local $iProcess = __IPC__ProcessHandleToId($hProcess)
-							If @error Then ContinueLoop ; should not happen, as long as the connection is there
-							$sCallback = $__IPC__Data.mServer.mProcesses[$iProcess].sCallback
-						EndIf
-						If $sCallback<>Default And $iDataCommand<>Default Then
-							__IPC_Log($__IPC_LOG_DEBUG, "MSG_DATA_CMD Received data: "&$iSocket&" >> "&$iDataCommand&" >> "&$bData)
-							If $hProcess<>Default Then
-								Call($sCallback, $hProcess, $bData, $iDataCommand)
-							Else
-								Call($sCallback, $bData, $iDataCommand)
-							EndIf
-							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
-						ElseIf $sCallback<>Default Then
-							__IPC_Log($__IPC_LOG_DEBUG, "MSG_DATA Received data: "&$iSocket&" >> "&$bData)
-							If $hProcess<>Default Then
-								Call($sCallback, $hProcess, $bData)
-							Else
-								Call($sCallback, $bData)
-							EndIf
-							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 1 parameter")
-							EndIf
-						If MapExists($__IPC__Data["mConnects"], $iSocket) Then ; may have been disconnected by the user in the callbacks
-							$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default
-							$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
-						EndIf
+				ElseIf $sCallback<>Default Then ; handle data message callback
+					__IPC_Log($__IPC_LOG_DEBUG, "MSG_DATA Received data: "&$iSocket&" >> "&$bData)
+					If $hProcess<>Default Then
+						Call($sCallback, $hProcess, $bData)
+						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
+					Else
+						Call($sCallback, $bData)
+						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 1 parameter")
 					EndIf
+				EndIf
+				; reset the command and message bytes
+				If MapExists($__IPC__Data["mConnects"], $iSocket) Then ; may have been disconnected by the user in the callbacks
+					$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default
+					$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
 				EndIf
 			Case $__IPC_MSG_CONNECT ; server side only
+				; read the provided hProcess to assign to the socket
 				Local $bData = __IPC__SocketReadBytes($iSocket, 4)
-				If Not @error Then
-					__IPC_Log($__IPC_LOG_INFO, "Subprocess connected: "&$iSocket&" Process: "&Int($bData))
-					Local $hProcess = Int($bData)
-					Local $iProcess = __IPC__ProcessHandleToId($hProcess)
-					If Not @error Then
-						$__IPC__Data["mConnects"][$iSocket]["hProcess"] = $hProcess
-						$__IPC__Data["mServer"]["mProcesses"][$iProcess]["iSocket"] = $iSocket
-						$__IPC__Data["mServer"]["mProcesses"][$iProcess]["bWaitForSocket"] = False
-						$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
-					EndIf
-				EndIf
+				If @error Then ExitLoop ; wait for more data to be received
+				__IPC_Log($__IPC_LOG_INFO, "Subprocess connected: "&$iSocket&" Process: "&Int($bData))
+				$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
+				Local $hProcess = Int($bData)
+				Local $iProcess = __IPC__ProcessHandleToId($hProcess)
+				If @error Then ContinueLoop ; tcp sent a not existing hProcess => protocol error, skip the command
+				$__IPC__Data["mConnects"][$iSocket]["hProcess"] = $hProcess
+				$__IPC__Data["mServer"]["mProcesses"][$iProcess]["iSocket"] = $iSocket
+				$__IPC__Data["mServer"]["mProcesses"][$iProcess]["bWaitForSocket"] = False
 			Case $__IPC_MSG_DISCONNECT
 				__IPC_Log($__IPC_LOG_INFO, "Received MSG_DISCONNECT: "&$iSocket)
 				$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
@@ -975,6 +1089,7 @@ Func __IPC__ProcessMessagesAtSocket($iSocket)
 				$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
 			Case Default
 				__IPC_Log($__IPC_LOG_TRACE, "Received unknown command: "&$iCmd&" at socket "&$iSocket)
+				$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
 		EndSwitch
 	WEnd
 EndFunc
@@ -997,9 +1112,12 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__SocketReadBytes($iSocket, $iBytes)
+	; check parameters
 	If Not IsInt($iSocket) Or Not MapExists($__IPC__Data.mConnects, $iSocket) Then Return SetError(1, 1, 0)
 	If Not IsInt($iBytes) Or $iBytes<=0 Then Return SetError(1, 2, 0)
+	 ; check amount of bytes available
 	If $__IPC__Data["mConnects"][$iSocket]["iDataBufferSize"] < $iBytes Then Return SetError(2, 0, 0)
+	; consume specified amount of bytes and return them
 	Local $bData = BinaryMid($__IPC__Data["mConnects"][$iSocket]["dataBuffer"], 1, $iBytes)
 	$__IPC__Data["mConnects"][$iSocket]["dataBuffer"] = BinaryMid($__IPC__Data["mConnects"][$iSocket]["dataBuffer"], $iBytes+1)
 	$__IPC__Data["mConnects"][$iSocket]["iDataBufferSize"] = BinaryLen($__IPC__Data.mConnects[$iSocket]["dataBuffer"])
@@ -1022,17 +1140,20 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__SocketDisconnect($iSocket, $bError = False)
+	; make sure socket exists
 	If Not IsInt($iSocket) Or Not MapExists($__IPC__Data.mConnects, $iSocket) Then Return SetError(1, 1, False)
+	; check if it is the sub process receiving data from the main process
 	If $__IPC__Data.mConnects[$iSocket].iType = $__IPC_CONN_TO_MAIN Then
 		__IPC_Log($__IPC_LOG_DEBUG, "Disconnect from main: "&$iSocket)
 		MapRemove($__IPC__Data.mConnects, $iSocket)
 		__IPC__SubDisconnect($bError)
+	; check if it is the main process receiving data from the sub process
 	ElseIf $__IPC__Data.mConnects[$iSocket].iType = $__IPC_CONN_TO_SUB Then
 		Local $hProcess = $__IPC__Data["mConnects"][$iSocket]["hProcess"]
-		If $hProcess=Default Then
+		If $hProcess=Default Then ; socket never received $__IPC_MSG_CONNECT with $hProcess to identify the socket
 			__IPC_Log($__IPC_LOG_DEBUG, "Disconnect unidentified sub process with socket "&$iSocket)
 			$__IPC__Data["mServer"]["iOpenProcesses"] += 1
-		Else
+		Else ; remove the socket for the process and send the terminate signal to the sub process
 			__IPC_Log($__IPC_LOG_DEBUG, "Disconnect sub process: "&$hProcess&" with socket "&$iSocket)
 			TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
 			__IPC__ProcessMessagesAtSocket($iSocket) ; process last data
@@ -1067,9 +1188,11 @@ EndFunc
 ; Example .......: No
 ; ===============================================================================================================================
 Func __IPC__ServerProcessRemove($iProcess, $bError = False)
+	; make sure process exists
 	If Not IsInt($iProcess) And Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 0, False)
 	Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
 	__IPC__ServerProcessLogStd($iProcess) ; handle output a last time
+	; disconnect socket if still connected => send terminate signal to sub processes
 	If $mProcess.iSocket<>Default Then __IPC__SocketDisconnect($mProcess.iSocket, $bError)
 	If $__IPC__Data["mServer"]["mProcesses"][$iProcess]["bWaitForSocket"] Then $__IPC__Data["mServer"]["iOpenProcesses"] -= 1
 	If $__IPC__Data.mServer.mProcesses[$iProcess].sExitCallback<>Default Then Call($__IPC__Data.mServer.mProcesses[$iProcess].sExitCallback, $mProcess.hProcess)

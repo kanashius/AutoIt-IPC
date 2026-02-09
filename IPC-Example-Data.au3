@@ -5,19 +5,21 @@
 
 	 Script Function:
 		Example script for the IPC InterProcessCommunication UDF.
-		This example show multiple sub processes sending data
+		This example shows multiple sub processes sending data and how the data
+		is received.
 
 #ce ----------------------------------------------------------------------------
 #include "IPC.au3"
 
 ; check if the call is a sub process and start the respective function
-Local $hSubProcess = __IPC_SubCheck("_SubProcess", "_MainProcess")
+__IPC_SubCheck("_SubProcess", "_MainProcess")
 If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubCheck: "&@error&":"&@extended)
 
 ; main/sub process both should call shutdown before exit
 __IPC_Shutdown()
 Exit
 
+; the main process main method, registered in __IPC_SubCheck to be called when the script is running as main process (no sub process command line arguments detected)
 Func _MainProcess()
 	; start a sub process calling the same script.
 	; the _CallbackMain method is called for messages received from the sub process
@@ -28,12 +30,14 @@ Func _MainProcess()
 	WEnd
 EndFunc
 
-Func _CallbackMain($hProcess, $data)
-	; $hProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
+; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
+Func _CallbackMain($hSubProcess, $data)
+	; $hSubProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
 	; $data can be a string or binary data, depending on the data sent by the sub process
-	ConsoleWrite("Data from ["&$hProcess&"]: "&$data&@crlf)
+	ConsoleWrite("Data from ["&$hSubProcess&"]: "&$data&@crlf)
 EndFunc
 
+; the sub process main method, registered in __IPC_SubCheck to be called when the script is running as a sub process
 Func _SubProcess($hSubProcess)
 	; send data to the main process
 	__IPC_SubSend("Starting")

@@ -5,6 +5,8 @@
 
 	 Script Function:
 		Example script for the IPC InterProcessCommunication UDF.
+		This example shows (together with IPC-Example-SeperatedMain.au3) how the
+		UDF works with the main and sub process in different scripts/executables.
 
 #ce ----------------------------------------------------------------------------
 #include "IPC.au3"
@@ -22,7 +24,8 @@ EndIf
 
 Exit
 
-Func _SubProcess()
+; the sub process main method, registered in __IPC_SubCheck to be called when the script is running as a sub process
+Func _SubProcess($hSubProcess)
 	ConsoleWrite("SubProcess started."&@crlf)
 	For $i=1 To UBound($CmdLine)-1
 		_process(Int($CmdLine[$i]))
@@ -34,10 +37,12 @@ Func _SubProcess()
 	Exit
 EndFunc
 
+; registered as callback in __IPC_SubCheck to be called when data from the main process is received
 Func _CallbackSub($data, $iCmd = Default)
 	_process($iCmd)
 EndFunc
 
+; registered as callback in __IPC_SubCheck to be called, when the connection to the main process is seperated
 Func _CallbackExit()
 	$bRun = False
 EndFunc
