@@ -1035,7 +1035,9 @@ Func __IPC__ProcessMessagesAtSocket($iSocket)
 					$bData = BinaryToString($bData, 2)
 					If @error Then
 						__IPC_Log($__IPC_LOG_ERROR, "Error converting received binary data to string: " & $bData)
-						ExitLoop
+						$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default
+						$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
+						ContinueLoop
 					EndIf
 				EndIf
 				; get the callback (if present) and the hProcess (if on main process and the message came from a sub process)
@@ -1195,7 +1197,7 @@ EndFunc
 ; ===============================================================================================================================
 Func __IPC__ServerProcessRemove($iProcess, $bError = False)
 	; make sure process exists
-	If Not IsInt($iProcess) Or Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 0, False)
+	If Not IsInt($iProcess) Or $iProcess < 0 Or Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 0, False)
 	Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
 	__IPC__ServerProcessLogStd($iProcess) ; handle output a last time
 	; disconnect socket if still connected => send terminate signal to sub processes
