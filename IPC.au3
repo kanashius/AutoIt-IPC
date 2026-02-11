@@ -103,7 +103,7 @@ Func __IPC_StartUp($iLogLevel = $__IPC_LOG_INFO, $iMainPullRate = Default, $iMax
 	If $iMainPort = Default Then $iMainPort = $__IPC_Port
 	If Not IsInt($iLogLevel) Or $iLogLevel<0 Or $iLogLevel>$__IPC_LOG_TRACE Then Return SetError(1, 1, False)
 	If Not IsInt($iMainPullRate) Or $iMainPullRate<0 Then Return SetError(1, 2, False)
-	If Not $iMaxReceiveCount=Default And Not IsInt($iMaxReceiveCount) And Not $iMaxReceiveCount>=0 Then Return SetError(1, 3, False)
+	If $iMaxReceiveCount <> Default And (Not IsInt($iMaxReceiveCount) Or $iMaxReceiveCount < 0) Then Return SetError(1, 3, False)
 	If Not IsInt($iMainPort) Or $iMainPort<1024 Or $iMainPort>65535 Then Return SetError(1, 4, False)
 	If Not MapExists($__IPC__Data, "iLogLevel") Then $__IPC__Data.iLogLevel = $iLogLevel
 	; init tcp
@@ -1189,7 +1189,7 @@ EndFunc
 ; ===============================================================================================================================
 Func __IPC__ServerProcessRemove($iProcess, $bError = False)
 	; make sure process exists
-	If Not IsInt($iProcess) And Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 0, False)
+	If Not IsInt($iProcess) Or Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 0, False)
 	Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
 	__IPC__ServerProcessLogStd($iProcess) ; handle output a last time
 	; disconnect socket if still connected => send terminate signal to sub processes
