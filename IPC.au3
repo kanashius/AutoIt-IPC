@@ -714,7 +714,7 @@ Func __IPC__SubDisconnect($bErr = False)
 	__IPC_Log($__IPC_LOG_DEBUG, "Close Client connection.")
 	; tell main process that sub process is disconnecting (ignore error => connection already lost)
 	Local $iSocket = $__IPC__Data.mClient.iSocket
-	TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
+	TCPSend($iSocket, Binary($__IPC_MSG_DISCONNECT))
 	; wait for the connection to be closed => provides the main process with the opportunity to read all TCP/STD data
 	Local $bTimeOut = True
 	For $i=0 to 1000 ; timeout after 10 seconds
@@ -1155,7 +1155,7 @@ Func __IPC__SocketDisconnect($iSocket, $bError = False)
 			$__IPC__Data["mServer"]["iOpenProcesses"] += 1
 		Else ; remove the socket for the process and send the terminate signal to the sub process
 			__IPC_Log($__IPC_LOG_DEBUG, "Disconnect sub process: "&$hProcess&" with socket "&$iSocket)
-			TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
+			TCPSend($iSocket, Binary($__IPC_MSG_DISCONNECT))
 			__IPC__ProcessMessagesAtSocket($iSocket) ; process last data
 			Local $iProcess = __IPC__ProcessHandleToId($hProcess)
 			If Not @error Then $__IPC__Data["mServer"]["mProcesses"][$iProcess]["iSocket"] = Default
