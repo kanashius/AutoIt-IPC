@@ -103,7 +103,7 @@ Func __IPC_StartUp($iLogLevel = $__IPC_LOG_INFO, $iMainPullRate = Default, $iMax
 	If $iMainPort = Default Then $iMainPort = $__IPC_Port
 	If Not IsInt($iLogLevel) Or $iLogLevel<0 Or $iLogLevel>$__IPC_LOG_TRACE Then Return SetError(1, 1, False)
 	If Not IsInt($iMainPullRate) Or $iMainPullRate<0 Then Return SetError(1, 2, False)
-	If Not $iMaxReceiveCount=Default And Not IsInt($iMaxReceiveCount) And Not $iMaxReceiveCount>=0 Then Return SetError(1, 3, False)
+	If $iMaxReceiveCount <> Default And (Not IsInt($iMaxReceiveCount) Or $iMaxReceiveCount < 0) Then Return SetError(1, 3, False)
 	If Not IsInt($iMainPort) Or $iMainPort<1024 Or $iMainPort>65535 Then Return SetError(1, 4, False)
 	If Not MapExists($__IPC__Data, "iLogLevel") Then $__IPC__Data.iLogLevel = $iLogLevel
 	; init tcp
@@ -714,7 +714,7 @@ Func __IPC__SubDisconnect($bErr = False)
 	__IPC_Log($__IPC_LOG_DEBUG, "Close Client connection.")
 	; tell main process that sub process is disconnecting (ignore error => connection already lost)
 	Local $iSocket = $__IPC__Data.mClient.iSocket
-	TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
+	TCPSend($iSocket, Binary($__IPC_MSG_DISCONNECT))
 	; wait for the connection to be closed => provides the main process with the opportunity to read all TCP/STD data
 	Local $bTimeOut = True
 	For $i=0 to 1000 ; timeout after 10 seconds
@@ -1031,7 +1031,15 @@ Func __IPC__ProcessMessagesAtSocket($iSocket)
 					$bData = BinaryMid($bData, 5)
 				EndIf
 				; handle string conversion, if a string was sent
-				If $iCmd = $__IPC_MSG_DATA_STR Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then $bData=BinaryToString($bData, 2)
+				If $iCmd = $__IPC_MSG_DATA_STR Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then
+					$bData = BinaryToString($bData, 2)
+					If @error Then
+						__IPC_Log($__IPC_LOG_ERROR, "Error converting received binary data to string: " & $bData)
+						$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default
+						$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
+						ContinueLoop
+					EndIf
+				EndIf
 				; get the callback (if present) and the hProcess (if on main process and the message came from a sub process)
 				Local $sCallback = Default
 				Local $hProcess = Default
@@ -1155,7 +1163,7 @@ Func __IPC__SocketDisconnect($iSocket, $bError = False)
 			$__IPC__Data["mServer"]["iOpenProcesses"] += 1
 		Else ; remove the socket for the process and send the terminate signal to the sub process
 			__IPC_Log($__IPC_LOG_DEBUG, "Disconnect sub process: "&$hProcess&" with socket "&$iSocket)
-			TCPSend($iSocket, $__IPC_MSG_DISCONNECT)
+			TCPSend($iSocket, Binary($__IPC_MSG_DISCONNECT))
 			__IPC__ProcessMessagesAtSocket($iSocket) ; process last data
 			Local $iProcess = __IPC__ProcessHandleToId($hProcess)
 			If Not @error Then $__IPC__Data["mServer"]["mProcesses"][$iProcess]["iSocket"] = Default
@@ -1189,7 +1197,7 @@ EndFunc
 ; ===============================================================================================================================
 Func __IPC__ServerProcessRemove($iProcess, $bError = False)
 	; make sure process exists
-	If Not IsInt($iProcess) And Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 0, False)
+	If Not IsInt($iProcess) Or $iProcess < 0 Or Not MapExists($__IPC__Data.mServer.mProcesses, $iProcess) Then Return SetError(1, 0, False)
 	Local $mProcess = $__IPC__Data.mServer.mProcesses[$iProcess]
 	__IPC__ServerProcessLogStd($iProcess) ; handle output a last time
 	; disconnect socket if still connected => send terminate signal to sub processes
