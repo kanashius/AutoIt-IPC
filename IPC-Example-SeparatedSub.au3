@@ -38,7 +38,7 @@ Func _SubProcess($hSubProcess)
 EndFunc
 
 ; registered as callback in __IPC_SubCheck to be called when data from the main process is received
-Func _CallbackSub($data, $iCmd = Default)
+Func _CallbackSub($iCmd, $arData)
 	_process($iCmd)
 EndFunc
 
@@ -49,10 +49,10 @@ EndFunc
 
 Func _process($iCmd)
 	ConsoleWrite("SubProcess start: "&$iCmd&@crlf)
-	__IPC_SubSend($iCmd, "Start")
+	__IPC_SubSendCmd($iCmd, "Start")
 	If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubSend", @error, @extended)
 	Sleep(Random(500, 2000, 1))
-	__IPC_SubSend($iCmd, "Done")
+	__IPC_SubSendCmd($iCmd, "Done")
 	If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubSend", @error, @extended)
 	ConsoleWrite("SubProcess ready: "&$iCmd&@crlf)
 EndFunc

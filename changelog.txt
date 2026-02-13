@@ -1,2 +1,9 @@
 Version 1.0.0
 - release of the first version
+Version 1.1.0
+- seperated __IPC_MainSend into __IPC_MainSend for data and __IPC_MainSendCmd for commands
+- seperated __IPC_SubSend into __IPC_SubSend for data and __IPC_SubSendCmd for commands
+- when sending data/commands, up to 10 parameters can be added. To send more, put them in other datatypes (e.g. arrays) for sending
+- the receiving callbacks now have a $iCmd and $arData parameter with $arData having as many elements as data parameters used with the send methods
+- it is now possible to sent any autoit data type directly (They are automatically converted to send over tcp and then converted back)
+  (except currently Object (ObjCreate) and DllStructs (DllStructCreate), still looking into that)

@@ -52,21 +52,21 @@ Func _MainProcess()
 EndFunc
 
 ; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
-Func _CallbackMain($hSubProcess, $data, $iCmd = Default)
+Func _CallbackMain($hSubProcess, $iCmd, $arData)
 	Switch $iCmd
 		Case $iCOMMAND_TEST
-			GUICtrlSetData($mMainGui.idEdit, "COMMAND_TEST ["&$hSubProcess&"]: "&$data&@crlf, True)
+			GUICtrlSetData($mMainGui.idEdit, "COMMAND_TEST ["&$hSubProcess&"]: "&$arData[0]&@crlf, True)
 		Case $iCOMMAND_PROGRESS
-			Local $iTotal = Int(BinaryMid($data, 1, 4)) ; int values are 32bit=>4byte
-			Local $iItemsDone = Int(BinaryMid($data, 5, 4)) ; int values are 32bit=>4byte
+			Local $iTotal = $arData[0]
+			Local $iItemsDone = $arData[1]
 			Local $dProgress = $iItemsDone/$iTotal
 			Local $iPerc = Int($dProgress*100)
 			GUICtrlSetData($mMainGui.idProgress, $iPerc)
 			GUICtrlSetData($mMainGui.idEdit, "COMMAND_PROGRESS ["&$hSubProcess&"]: "&$iItemsDone&"/"&$iTotal&" = "&Round($dProgress, 2)&" => "&$iPerc&"%"&@crlf, True)
 		Case Default
-			GUICtrlSetData($mMainGui.idEdit, $data&@crlf, True)
+			GUICtrlSetData($mMainGui.idEdit, $arData[0]&@crlf, True)
 		Case Else
-			GUICtrlSetData($mMainGui.idEdit, "COMMAND_UNKNOWN ["&$hSubProcess&"] ["&$iCmd&"]: "&$data&@crlf, True)
+			GUICtrlSetData($mMainGui.idEdit, "COMMAND_UNKNOWN ["&$hSubProcess&"] ["&$iCmd&"] arData["&UBound($arData)&"]"&@crlf, True)
 	EndSwitch
 EndFunc
 
@@ -81,14 +81,14 @@ Func _SubProcess($hSubProcess)
 	If UBound($CmdLine)>1 Then $iTotalItems = Int($CmdLine[1])
 	__IPC_SubSend("Start processing items") ; send data without a command
 	For $i=0 to $iTotalItems-1
-		__IPC_SubSend($iCOMMAND_PROGRESS, Binary($iTotalItems)&Binary($i+1))
+		__IPC_SubSendCmd($iCOMMAND_PROGRESS, $iTotalItems, $i+1)
 		If @error Then Return SetError(2, 0 , False)
 		Sleep(Random(1,500, 1)) ; just this sleep lets the entire application freeze/crash (why?)
 	Next
 	__IPC_SubSend("Done processing items")
-	__IPC_SubSend($iCOMMAND_TEST, "test command")
+	__IPC_SubSendCmd($iCOMMAND_TEST, "test command")
 	If @error Then __IPC_Log($__IPC_LOG_ERROR, "Failed sending", @error, @extended) ; to check for errors when sending
-	__IPC_SubSend($iCOMMAND_UNKNOWN, "") ; send an unknown command
+	__IPC_SubSendCmd($iCOMMAND_UNKNOWN) ; send an unknown command
 	Return True
 EndFunc
 
@@ -98,6 +98,6 @@ Func _CallbackSubClose()
 EndFunc
 
 ; registered as callback in __IPC_SubCheck to be called when data from the main process is received
-Func _CallbackSub($data, $iCmd = Default)
-	ConsoleWrite("Callback Sub: "&$iCmd&" >> "&$data&@crlf)
+Func _CallbackSub($iCmd, $arData)
+	ConsoleWrite("Callback Sub: "&$iCmd&" >> "&UBound($arData)&@crlf)
 EndFunc

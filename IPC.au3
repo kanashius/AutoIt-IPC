@@ -1,5 +1,6 @@
 #include-once
 #include <AutoItConstants.au3>
+#include <WinAPIProc.au3>
 
 ; #INDEX# =======================================================================================================================
 ; Title .........: IPC (InterProcessCommunication)
@@ -8,7 +9,7 @@
 ; Description ...: UDF for inter process communication between the main and child processes using TCP.
 ;                  Strings can be send as well as integer commands.
 ; Author(s) .....: Kanashius
-; Version .......: 1.0.0
+; Version .......: 1.1.0
 ; ===============================================================================================================================
 
 ; #CURRENT# =====================================================================================================================
@@ -20,7 +21,9 @@
 ; __IPC_SubCheck
 ; __IPC_SubConnect
 ; __IPC_SubSend
+; __IPC_SubSendCmd
 ; __IPC_MainSend
+; __IPC_MainSendCmd
 ; __IPC_ProcessStop
 ; __IPC_SubProcessing
 ; __IPC_MainProcessing
@@ -29,6 +32,9 @@
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
 ; __IPC__SendMsg
+; __IPC__ToBinary
+; __IPC__BinaryConsumeVar
+; __IPC__BinaryConsumeBytes
 ; __IPC__SubDisconnect
 ; __IPC__ServerStart
 ; __IPC__ServerIsRunning
@@ -53,10 +59,15 @@ Global Const $__IPC_LOG_TRACE = 6
 
 ; #INTERNAL_USE_ONLY GLOBAL VARIABLES # =========================================================================================
 Global Const $__IPC_CONN_TO_MAIN = 1, $__IPC_CONN_TO_SUB = 2
-Global Const $__IPC_MSG_CONNECT = 1, $__IPC_MSG_DISCONNECT = 2, $__IPC_MSG_ACK = 3, $__IPC_MSG_DATA = 4, $__IPC_MSG_DATA_STR = 5
-Global Const $__IPC_MSG_DATA_CMD = 6, $__IPC_MSG_DATA_CMD_STR = 7
+Global Const $__IPC_MSG_CONNECT = Int(1, 1), $__IPC_MSG_DISCONNECT = Int(2, 1), $__IPC_MSG_ACK = Int(3, 1)
+Global Const $__IPC_MSG_DATA = Int(4, 1), $__IPC_MSG_CMD = Int(5, 1), $__IPC_MSG_CMD_DATA = Int(6, 1)
 Global Const $__IPC_Port = 40001, $__IPC_MainPullRate = 100, $__IPC_MaxByteRecv = 1024, $__IPC_SubPullRate = 100
 Global Const $__IPC_PARAM_CONNECT = "--IPC-CONNECT"
+Global Const $__IPC_DataType_Binary = Int(1, 1), $__IPC_DataType_Bool = Int(2, 1), $__IPC_DataType_Func = Int(3, 1)
+Global Const $__IPC_DataType_Double = Int(4, 1), $__IPC_DataType_Ptr = Int(5, 1), $__IPC_DataType_Hwnd = Int(6, 1)
+Global Const $__IPC_DataType_Int32 = Int(7, 1), $__IPC_DataType_Int64 = Int(8, 1), $__IPC_DataType_Object = Int(9, 1)
+Global Const $__IPC_DataType_String = Int(10, 1), $__IPC_DataType_Keyword = Int(11, 1), $__IPC_DataType_DLLStruct = Int(12, 1)
+Global Const $__IPC_DataType_Map = Int(13, 1), $__IPC_DataType_Array = Int(14, 1)
 Global $__IPC__Data[]
 ; ===============================================================================================================================
 
@@ -221,9 +232,9 @@ EndFunc
 ; Author ........: Kanashius
 ; Modified ......:
 ; Remarks .......:
-;                 $sCallback must be a function with 2 or 3 parameters ($hSubProcess, $data, $iCmd = Default). Depending on the usage of __IPC_SubSend in the sub process.
-;                 If __IPC_SubSend sends commands, the function must have 3 parameters. Otherwise 2 are sufficient.
-;                 $iCmd is an integer and $data is either a string or binary data, depending on __IPC_SubSend.
+;                 $sCallback must be a function with 3 parameters ($hSubProcess, $iCmd, $arData).
+;                 $iCmd is the integer command and $arData is a 1D-Array with all values sent.
+;                 $iCmd or $arData can be Default, if they were not sent.
 ;
 ;                 If $arguments is a 1D-Array, all not string values are converted to string with String().
 ;
@@ -337,9 +348,9 @@ EndFunc
 ;
 ;                  $sFunctionMain must be a function without parameters. It is called, when the script is executed as main process.
 ;
-;                  $sCallback must be a function with 1 or 2 parameters ($data, $iCmd = Default). Depending on the usage of __IPC_MainSend in the main process.
-;                  If __IPC_MainSend sends commands, the function must have 2 parameters. Otherwise 1 is sufficient.
-;                  $iCmd is an integer and $data is either a string or binary data, depending on __IPC_MainSend.
+;                  $sCallback must be a function with 2 parameters ($iCmd, $arData).
+;                  $iCmd contains the integer command and $arData is a 1D-Array with all values sent.
+;                  $iCmd or $arData can be Default, if they were not sent.
 ;
 ;                  $sExitCallback must be a function without parameters. This function will be called, when the main process disconnects from the sub process.
 ;
@@ -462,56 +473,166 @@ EndFunc
 
 ; #FUNCTION# ====================================================================================================================
 ; Name ..........: __IPC_SubSend
-; Description ...: Send data or an integer command (with data) to the main process
-; Syntax ........: __IPC_SubSend($iCmdOrData[, $data = Default])
-; Parameters ....: $iCmdOrData         - the data to send or an integer as command (if data is provided)
-;                  $data               - [optional] Default: data is in parameter $iCmdOrData. The data to send with the command.
-; Return values .: True on success.
-; Author ........: Kanashius
-; Modified ......:
-; Remarks .......: Errors:
-;                  1 - Parameter invalid (@extended: 1 - $iCmdOrData)
-;                  2 - TCP Send failed
-;                  3 - Not connected to main process
-; Related .......:
-; Link ..........:
-; Example .......: No
-; ===============================================================================================================================
-Func __IPC_SubSend($iCmdOrData, $data = Default)
-	If $__IPC__Data.mClient.iSocket=Default Then Return SetError(3, 0, False)
-	Local $bResult = __IPC__SendMsg($__IPC__Data.mClient.iSocket, $iCmdOrData, $data)
-	If @error Then Return SetError(@error, @extended, $bResult)
-	Return $bResult
-EndFunc
-
-
-; #FUNCTION# ====================================================================================================================
-; Name ..........: __IPC_MainSend
-; Description ...: Send data or an integer command (with data) to a sub process
-; Syntax ........: __IPC_MainSend($hProcess, $iCmdOrData[, $data = Default])
+; Description ...: Send data to the main process
+; Syntax ........: __IPC_SubSend($data1, [$data2 = Default, [$data3 = Default, [$data4 = Default, [$data5 = Default,
+;                                [$data6 = Default, [$data7 = Default, [$data8 = Default, [$data9 = Default, [$data10 = Default]]]]]]]]])
 ; Parameters ....: $hProcess           - the sub process handle
-;                  $iCmdOrData         - the data to send or an integer as command (if data is provided)
-;                  $data               - [optional] Default: data is in parameter $iCmdOrData. The data to send with the command.
+;                  $data1              - the data
+;                  $data2              - [optional] the data (if provided, it will be send, even if default)
+;                  ...                 - ...
+;                  $data10             - [optional] the data (if provided, it will be send, even if default)
 ; Return values .: True on success.
 ; Author ........: Kanashius
 ; Modified ......:
 ; Remarks .......: Errors:
-;                  1 - Parameter invalid (@extended: 1 - $hProcess, 2 - $iCmdOrData)
+;                  1 - Parameter invalid
 ;                  2 - TCP Send failed
 ;                  3 - Not connected to sub process
 ; Related .......:
 ; Link ..........:
 ; Example .......: No
 ; ===============================================================================================================================
-Func __IPC_MainSend($hProcess, $iCmdOrData, $data = Default)
+Func __IPC_SubSend($data1, $data2 = Default, $data3 = Default, $data4 = Default, $data5 = Default, $data6 = Default, _
+	                $data7 = Default, $data8 = Default, $data9 = Default, $data10 = Default)
+	If $__IPC__Data.mClient.iSocket=Default Then Return SetError(3, 0, False)
+
+	Local $arArgs[@NumParams+3]
+    $arArgs[0] = "CallArgArray"
+	$arArgs[1] = $__IPC__Data.mClient.iSocket
+	$arArgs[2] = Default
+	For $i=1 To @NumParams
+		$arArgs[$i+2] = Eval("data"&$i)
+	Next
+
+	Local $bResult = Call("__IPC__SendMsg", $arArgs)
+	If @error Then Return SetError(@error, @extended-2, $bResult)
+	Return $bResult
+EndFunc
+
+; #FUNCTION# ====================================================================================================================
+; Name ..........: __IPC_SubSendCmd
+; Description ...: Send an integer command (with data) to the main process
+; Syntax ........: __IPC_SubSendCmd($hProcess, $iCmd, [$data1 = Default, [$data2 = Default, [$data3 = Default, [$data4 = Default,
+;                                   [$data5 = Default, [$data6 = Default, [$data7 = Default, [$data8 = Default, [$data9 = Default,
+;                                   [$data10 = Default]]]]]]]]]])
+; Parameters ....: $iCmd               - integer as command
+;                  $data1              - [optional] the data (if provided, it will be send, even if default)
+;                  ...                 - ...
+;                  $data10             - [optional] the data (if provided, it will be send, even if default)
+; Return values .: True on success.
+; Author ........: Kanashius
+; Modified ......:
+; Remarks .......: Errors:
+;                  1 - Parameter invalid (1 - $iCmd)
+;                  2 - TCP Send failed
+;                  3 - Not connected to sub process
+; Related .......:
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __IPC_SubSendCmd($iCmd, $data1 = Default, $data2 = Default, $data3 = Default, $data4 = Default, $data5 = Default, $data6 = Default, _
+	                $data7 = Default, $data8 = Default, $data9 = Default, $data10 = Default)
+	If $__IPC__Data.mClient.iSocket=Default Then Return SetError(3, 0, False)
+	If Not IsInt($iCmd) Then Return SetError(1, 2, False)
+
+	Local $arArgs[@NumParams+2]
+    $arArgs[0] = "CallArgArray"
+	$arArgs[1] = $__IPC__Data.mClient.iSocket
+	$arArgs[2] = $iCmd
+	For $i=1 To @NumParams-1
+		$arArgs[$i+2] = Eval("data"&$i)
+	Next
+
+	Local $bResult = Call("__IPC__SendMsg", $arArgs)
+	If @error Then Return SetError(@error, @extended-1, $bResult)
+	Return $bResult
+EndFunc
+
+; #FUNCTION# ====================================================================================================================
+; Name ..........: __IPC_MainSend
+; Description ...: Send data to a sub process
+; Syntax ........: __IPC_MainSend($hProcess, $data1, [$data2 = Default, [$data3 = Default, [$data4 = Default, [$data5 = Default,
+;                                 [$data6 = Default, [$data7 = Default, [$data8 = Default, [$data9 = Default,
+;                                 [$data10 = Default]]]]]]]]])
+; Parameters ....: $hProcess           - the sub process handle
+;                  $data1              - the data
+;                  $data2              - [optional] the data (if provided, it will be send, even if default)
+;                  ...                 - ...
+;                  $data10             - [optional] the data (if provided, it will be send, even if default)
+; Return values .: True on success.
+; Author ........: Kanashius
+; Modified ......:
+; Remarks .......: Errors:
+;                  1 - Parameter invalid (@extended: 1 - $hProcess)
+;                  2 - TCP Send failed
+;                  3 - Not connected to sub process
+; Related .......:
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __IPC_MainSend($hProcess, $data1, $data2 = Default, $data3 = Default, $data4 = Default, $data5 = Default, $data6 = Default, _
+	                $data7 = Default, $data8 = Default, $data9 = Default, $data10 = Default)
 	Local $iProcess = __IPC__ProcessHandleToId($hProcess)
 	If @error Then Return SetError(1, 1, False)
 
 	Local $iSocket = $__IPC__Data.mServer.mProcesses[$iProcess].iSocket
 	If $iSocket=Default Then Return SetError(3, 0, False)
 
-	Local $bResult = __IPC__SendMsg($iSocket, $iCmdOrData, $data)
-	If @error=1 Then Return SetError(@error, @extended+1, $bResult)
+	Local $arArgs[@NumParams+2]
+    $arArgs[0] = "CallArgArray"
+	$arArgs[1] = $iSocket
+	$arArgs[2] = Default
+	For $i=1 To @NumParams
+		$arArgs[$i+2] = Eval("data"&$i)
+	Next
+
+	Local $bResult = Call("__IPC__SendMsg", $arArgs)
+	If @error=1 Then Return SetError(@error, @extended, $bResult)
+	If @error Then Return SetError(@error, @extended, $bResult)
+	Return $bResult
+EndFunc
+
+; #FUNCTION# ====================================================================================================================
+; Name ..........: __IPC_MainSendCmd
+; Description ...: Send an integer command (with data) to a sub process
+; Syntax ........: __IPC_MainSendCmd($hProcess, $iCmd, [$data1 = Default, [$data2 = Default, [$data3 = Default, [$data4 = Default,
+;                                    [$data5 = Default, [$data6 = Default, [$data7 = Default, [$data8 = Default,
+;                                    [$data9 = Default, [$data10 = Default]]]]]]]]]])
+; Parameters ....: $hProcess           - the sub process handle
+;                  $iCmd               - integer as command
+;                  $data1              - [optional] the data (if provided, it will be send, even if default)
+;                  ...                 - ...
+;                  $data10             - [optional] the data (if provided, it will be send, even if default)
+; Return values .: True on success.
+; Author ........: Kanashius
+; Modified ......:
+; Remarks .......: Errors:
+;                  1 - Parameter invalid (@extended: 1 - $hProcess, 2 - $iCmd)
+;                  2 - TCP Send failed
+;                  3 - Not connected to sub process
+; Related .......:
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __IPC_MainSendCmd($hProcess, $iCmd, $data1 = Default, $data2 = Default, $data3 = Default, $data4 = Default, $data5 = Default, _
+					   $data6 = Default, $data7 = Default, $data8 = Default, $data9 = Default, $data10 = Default)
+	If Not IsInt($iCmd) Then Return SetError(1, 2, False)
+	Local $iProcess = __IPC__ProcessHandleToId($hProcess)
+	If @error Then Return SetError(1, 1, False)
+
+	Local $iSocket = $__IPC__Data.mServer.mProcesses[$iProcess].iSocket
+	If $iSocket=Default Then Return SetError(3, 0, False)
+
+	Local $arArgs[@NumParams+2]
+    $arArgs[0] = "CallArgArray"
+	$arArgs[1] = $iSocket
+	$arArgs[2] = $iCmd
+	For $i=2 To @NumParams-1
+		$arArgs[$i+1] = Eval("data"&($i-1))
+	Next
+
+	Local $bResult = Call("__IPC__SendMsg", $arArgs)
+	If @error=1 Then Return SetError(@error, @extended, $bResult)
 	If @error Then Return SetError(@error, @extended, $bResult)
 	Return $bResult
 EndFunc
@@ -643,8 +764,10 @@ EndFunc
 ; Description ...: Load or update the content of a treeview item to fill it with files/folders/drives
 ; Syntax ........: __IPC__SendMsg($iSocket[, $iCmdOrData[, $data = Default]])
 ; Parameters ....: $iSocket       - the tcp socket
-;                  $iCmdOrData    - the integer command or data
-;                  $data          - the data (if a command should be sent)
+;                  $iCmd          - [optional] the integer command or default for no command
+;                  $data1         - [optional] the data (if provided, it will be send, even if default)
+;                  ...            - ...
+;                  $data10        - [optional] the data (if provided, it will be send, even if default)
 ; Return values .: True on success.
 ; Author ........: Kanashius
 ; Modified ......:
@@ -655,44 +778,297 @@ EndFunc
 ; Link ..........:
 ; Example .......: No
 ; ===============================================================================================================================
-Func __IPC__SendMsg($iSocket, $iCmdOrData, $data = Default)
-	; handle parameters
-	Local $bCmd = True
-	If $data=Default Then
-		$data = $iCmdOrData
-		$bCmd = False
-	EndIf
-	Local $iMsg = $__IPC_MSG_DATA
+Func __IPC__SendMsg($iSocket, $iCmd = Default, $data1 = Default, $data2 = Default, $data3 = Default, $data4 = Default, _
+					$data5 = Default, $data6 = Default, $data7 = Default, $data8 = Default, $data9 = Default, $data10 = Default)
 	; check if data is a string
-	If Not IsBinary($data) Then
-		If Not IsString($data) Then $data = String($data)
-		$iMsg = $__IPC_MSG_DATA_STR
-		$data = StringToBinary($data, 2)
-	EndIf
+	Local $iDataParamCount = @NumParams-2
+	Local $dData = __IPC__ToBinary($iDataParamCount)
+	For $i=0 To $iDataParamCount-1
+		$dData &= __IPC__ToBinary(Eval("data"&$i+1))
+		If @error Then Return SetError(1, $i+2, False)
+	Next
+	Local $iMsg = $__IPC_MSG_DATA
 	; handle the cmd parameter
-	If $bCmd Then
+	If $iCmd<>Default Then
 		; check cmd parameter if it is an integer
-		If Not IsInt($iCmdOrData) Then Return SetError(1, 1, False)
+		If Not IsInt($iCmd) Then Return SetError(1, 1, False)
+		$iMsg = $__IPC_MSG_CMD
+		If $iDataParamCount>0 Then $iMsg = $__IPC_MSG_CMD_DATA
 		; prepend the command to the data
-		$data = Binary($iCmdOrData)&$data
-		If $iMsg=$__IPC_MSG_DATA Then
-			$iMsg = $__IPC_MSG_DATA_CMD
-		Else
-			$iMsg = $__IPC_MSG_DATA_CMD_STR
-		EndIf
+		$dData = __IPC__ToBinary($iCmd) & $dData
 	EndIf
 	; check the data length
-	Local $iLen = BinaryLen($data)
+	Local $iLen = BinaryLen($dData)
 	; send the message binary data length as integer first
-	TCPSend($iSocket, Binary($iMsg)&Binary($iLen))
+	TCPSend($iSocket, Binary($iMsg)&Binary(Int($iLen, 2)))
 	If @error Then Return SetError(2, __IPC__SubDisconnect(True), False)
 	; send the data in $__IPC_MaxByteRecv sized packages
 	For $i=1 To $iLen Step $__IPC_MaxByteRecv
-		Local $bSend = BinaryMid($data, $i, $__IPC_MaxByteRecv)
-		TCPSend($iSocket, $bSend)
+		Local $dSend = BinaryMid($dData, $i, $__IPC_MaxByteRecv)
+		TCPSend($iSocket, $dSend)
 		If @error Then Return SetError(2, __IPC__SubDisconnect(True), False)
 	Next
 	Return True
+EndFunc
+
+; #INTERNAL_USE_ONLY# ===========================================================================================================
+; Name ..........: __IPC__ToBinary
+; Description ...: Convert variable to binary data
+; Syntax ........: __IPC__ToBinary($data, $bPrefixed = True)
+; Parameters ....: $data          - the variable to convert to binary
+; Return values .: The binary data on success
+; Author ........: Kanashius
+; Modified ......:
+; Remarks .......: Errors:
+;                  1 - Parameter invalid (@extended: 1 - $iCmdOrData)
+;                  2 - Unknown datatype
+;                  3 - Could not be converted to binary
+; Related .......:
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __IPC__ToBinary($data)
+	Local $bAddSize = False, $iDataType = 0, $dData = Default
+	Switch VarGetType($data)
+		Case "Binary"
+			$iDataType = $__IPC_DataType_Binary
+			$dData = $data
+			$bAddSize = True
+		Case "Bool"
+			$iDataType = $__IPC_DataType_Bool
+			$dData = Binary($data)
+		Case "UserFunction", "Function"
+			$iDataType = $__IPC_DataType_Func
+			$dData = StringToBinary(FuncName($data), 4)
+			$bAddSize = True
+		Case "Double"
+			$iDataType = $__IPC_DataType_Double
+			$dData = Binary($data)
+		Case "Ptr" ; => also handles
+			$iDataType = IsHWnd($data)?$__IPC_DataType_Hwnd:$__IPC_DataType_Ptr
+			$dData = Binary($data)
+			$bAddSize = True
+		Case "Int32"
+			$iDataType = $__IPC_DataType_Int32
+			$dData = Binary($data)
+		Case "Int64"
+			$iDataType = $__IPC_DataType_Int64
+			$dData = Binary($data)
+		Case "Object"
+			#cs
+			Local $iPid = _WinAPI_GetCurrentProcessID()
+			__IPC__ToBinary($iPid) ; add to binary
+			_WinAPI_DuplicateHandle()
+
+			Local $sCLSID = ObjName($data, $OBJ_PROGID); $OBJ_CLSID)
+			Local $sIID = ObjName($data, $OBJ_IID)
+			ConsoleWrite($sCLSID&@crlf)
+			ConsoleWrite($sIID&@crlf)
+			Local $oObj = ObjGet(ObjName($data, $OBJ_MODULE)) ; ObjCreateInterface($sCLSID, $sIID)
+			$oObj.add(3, "drei")
+			ConsoleWrite("---------1--------"&@crlf)
+			For $vKey In $data
+			   ConsoleWrite($vKey&" > "&$data.Item($vKey) & " , ")
+			Next
+			ConsoleWrite(@crlf)
+			ConsoleWrite("---------2--------"&@crlf)
+			For $vKey In $oObj
+			   ConsoleWrite($vKey&" > "&$oObj.Item($vKey) & " , ")
+			Next
+			ConsoleWrite(@crlf)
+			ConsoleWrite("-----------------"&@crlf)
+			#ce
+		Case "String"
+			$iDataType = $__IPC_DataType_String
+			$dData = StringToBinary($data, 2)
+			$bAddSize = True
+		Case "Keyword"
+			$iDataType = $__IPC_DataType_Keyword
+			$dData = StringToBinary($data, 4)
+			$bAddSize = True
+		Case "DLLStruct"
+			#cs
+			; ??? _WinAPI_DuplicateHandle()
+			; maybe see objcreate to share memory across processes
+			Local $iIndex = 1
+			While True
+				Local $elem = DllStructGetData($data, $iIndex)
+				If IsString($elem) Then
+					; iterate DllStructGetData($data, $iIndex, 1...) and retrieve every index seperately to get the size
+				EndIf
+				ConsoleWrite(VarGetType($elem)&" >> "&$elem&@crlf)
+				$iIndex += 1
+				If @error Then ExitLoop
+			WEnd
+			#ce
+		Case "Map"
+			$iDataType = $__IPC_DataType_Map
+			Local $arKeys = MapKeys($data)
+			Local $dData = __IPC__ToBinary(UBound($arKeys))
+			For $i=0 to UBound($arKeys)-1
+				$dData &= __IPC__ToBinary($arKeys[$i])
+				$dData &= __IPC__ToBinary($data[$arKeys[$i]])
+			Next
+		Case "Array"
+			$iDataType = $__IPC_DataType_Array
+			Local $iDim = UBound($data, 0)
+			$dData = __IPC__ToBinary($iDim)
+			Switch $iDim
+				Case 1
+					$dData &= __IPC__ToBinary(UBound($data))
+					For $i=0 to UBound($data)-1
+						$dData &= __IPC__ToBinary($data[$i])
+					Next
+				Case 2
+					$dData &= __IPC__ToBinary(UBound($data))
+					$dData &= __IPC__ToBinary(UBound($data, 2))
+					For $i=0 to UBound($data)-1
+						For $j=0 to UBound($data, 2)-1
+							$dData &= __IPC__ToBinary($data[$i][$j])
+						Next
+					Next
+				Case 3
+					$dData &= __IPC__ToBinary(UBound($data))
+					$dData &= __IPC__ToBinary(UBound($data, 2))
+					$dData &= __IPC__ToBinary(UBound($data, 3))
+					For $i=0 to UBound($data)-1
+						For $j=0 to UBound($data, 2)-1
+							For $k=0 to UBound($data, 3)-1
+								$dData &= __IPC__ToBinary($data[$i][$j][$k])
+							Next
+						Next
+					Next
+			EndSwitch
+		Case Else
+			Return SetError(2, 0, 0)
+	EndSwitch
+	If $dData=Default Then Return SetError(3, 0, 0)
+	If $bAddSize Then
+		Return Binary($iDataType)&__IPC__ToBinary(BinaryLen($dData))&$dData
+	Else
+		Return Binary($iDataType)&$dData
+	EndIf
+EndFunc
+
+; #INTERNAL_USE_ONLY# ===========================================================================================================
+; Name ..........: __IPC__BinaryConsumeVar
+; Description ...: Read a variable from binary data (and consume it from the binary data)
+; Syntax ........: __IPC__BinaryConsumeVar(ByRef $dData)
+; Parameters ....: $dData          - the binary data
+; Return values .: The variable with the correct type on success
+; Author ........: Kanashius
+; Modified ......:
+; Remarks .......: Errors:
+;                  ?
+; Related .......:
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __IPC__BinaryConsumeVar(ByRef $dData)
+	; todo error handling
+	Local $iDataType = Int(__IPC__BinaryConsumeBytes($dData, 4))
+	Switch $iDataType
+		Case $__IPC_DataType_Binary
+			Local $iSize = __IPC__BinaryConsumeVar($dData)
+			Return __IPC__BinaryConsumeBytes($dData, $iSize)
+		Case $__IPC_DataType_Bool
+			Return Int(__IPC__BinaryConsumeBytes($dData, 1))?(True):(False)
+		Case $__IPC_DataType_Func, $__IPC_DataType_Keyword
+			Local $iSize = __IPC__BinaryConsumeVar($dData)
+			Local $dBinaryVal = __IPC__BinaryConsumeBytes($dData, $iSize)
+			Local $sName = BinaryToString($dBinaryVal, 4)
+			Return Execute($sName)
+		Case $__IPC_DataType_Double
+			Local $dDouble = __IPC__BinaryConsumeBytes($dData, 8)
+			Local $tDoubleStruct = DllStructCreate("byte[8]")
+			DllStructSetData($tDoubleStruct, 1, $dDouble)
+			Return DllStructGetData(DllStructCreate("double", DllStructGetPtr($tDoubleStruct)), 1)
+		Case $__IPC_DataType_Ptr, $__IPC_DataType_Hwnd
+			Local $iSize = __IPC__BinaryConsumeVar($dData)
+			Local $dPtr = Ptr(Int(__IPC__BinaryConsumeBytes($dData, $iSize)))
+			If $iDataType=$__IPC_DataType_Hwnd Then Return HWnd($dPtr)
+			Return $dPtr
+		Case $__IPC_DataType_Int32
+			Return Int(__IPC__BinaryConsumeBytes($dData, 4), 1)
+		Case $__IPC_DataType_Int64
+			Return Int(__IPC__BinaryConsumeBytes($dData, 8), 2)
+		Case $__IPC_DataType_Object
+			; todo
+			;Local $iPid = __IPC__BinaryConsumeVar($dData)
+			;_WinAPI_GetProcessHandleCount
+			;_WinAPI_DuplicateHandle(?, ?, ?, 0, True, 2) ; 2 => DUPLICATE_SAME_ACCESS
+		Case $__IPC_DataType_String
+			Local $iSize = __IPC__BinaryConsumeVar($dData)
+			Return BinaryToString(__IPC__BinaryConsumeBytes($dData, $iSize), 2)
+		Case $__IPC_DataType_DLLStruct
+			; todo
+		Case $__IPC_DataType_Map
+			Local $iPairs = __IPC__BinaryConsumeVar($dData)
+			Local $mMap[]
+			For $i=0 to $iPairs-1
+				Local $key = __IPC__BinaryConsumeVar($dData)
+				Local $val = __IPC__BinaryConsumeVar($dData)
+				$mMap[$key] = $val
+			Next
+			Return $mMap
+		Case $__IPC_DataType_Array
+			Local $iDim = __IPC__BinaryConsumeVar($dData)
+			Switch $iDim
+				Case 1
+					Local $iSize = __IPC__BinaryConsumeVar($dData)
+					Local $arData[$iSize]
+					For $i=0 to UBound($arData)-1
+						$arData[$i] = __IPC__BinaryConsumeVar($dData)
+					Next
+					Return $arData
+				Case 2
+					Local $iSize = __IPC__BinaryConsumeVar($dData)
+					Local $iSize2 = __IPC__BinaryConsumeVar($dData)
+					Local $arData[$iSize][$iSize2]
+					For $i=0 to UBound($arData)-1
+						For $j=0 to UBound($arData, 2)-1
+							$arData[$i][$j] = __IPC__BinaryConsumeVar($dData)
+						Next
+					Next
+					Return $arData
+				Case 3
+					Local $iSize = __IPC__BinaryConsumeVar($dData)
+					Local $iSize2 = __IPC__BinaryConsumeVar($dData)
+					Local $iSize3 = __IPC__BinaryConsumeVar($dData)
+					Local $arData[$iSize][$iSize2][$iSize3]
+					For $i=0 to UBound($arData)-1
+						For $j=0 to UBound($arData, 2)-1
+							For $k=0 to UBound($arData, 3)-1
+								$arData[$i][$j][$k] = __IPC__BinaryConsumeVar($dData)
+							Next
+						Next
+					Next
+					Return $arData
+			EndSwitch
+		Case Else
+			; todo error
+	EndSwitch
+EndFunc
+
+; #INTERNAL_USE_ONLY# ===========================================================================================================
+; Name ..........: __IPC__BinaryConsumeBytes
+; Description ...: Consume an amount of bytes from the binary variable and return them. The returned bytes are removed from $dData.
+; Syntax ........: __IPC__BinaryConsumeBytes(ByRef $dData)
+; Parameters ....: $dData          - the binary data
+; Return values .: The binary data with $iBytes number of bytes
+; Author ........: Kanashius
+; Modified ......:
+; Remarks .......: Errors:
+;                  1 - Parameter invalid (@extended: 1 - $dData)
+; Related .......:
+; Link ..........:
+; Example .......: No
+; ===============================================================================================================================
+Func __IPC__BinaryConsumeBytes(ByRef $dData, $iBytes)
+	If BinaryLen($dData)<$iBytes Then Return SetError(1, 1, False)
+	Local $bResultData = BinaryMid($dData, 1, $iBytes)
+	$dData = BinaryMid($dData, 1+$iBytes)
+	Return $bResultData
 EndFunc
 
 ; #INTERNAL_USE_ONLY# ===========================================================================================================
@@ -1008,38 +1384,45 @@ EndFunc
 Func __IPC__ProcessMessagesAtSocket($iSocket)
 	While MapExists($__IPC__Data.mConnects, $iSocket) And $__IPC__Data.mConnects[$iSocket]["iDataBufferSize"]>0
 		If $__IPC__Data.mConnects[$iSocket]["iLastCommand"]=Default Then
-			Local $bData = __IPC__SocketReadBytes($iSocket, 4)
+			Local $bData = __IPC__SocketReadBytes($iSocket, 4) ; int32
 			If @error Then ExitLoop ; wait for more data to be received
 			If Not @error Then $__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = $bData
 		EndIf
 		Local $iCmd = $__IPC__Data.mConnects[$iSocket]["iLastCommand"]
 		Switch $iCmd
-			Case $__IPC_MSG_DATA, $__IPC_MSG_DATA_STR, $__IPC_MSG_DATA_CMD, $__IPC_MSG_DATA_CMD_STR
+			Case $__IPC_MSG_DATA, $__IPC_MSG_CMD, $__IPC_MSG_CMD_DATA
 				; check if the amount of message data bytes was already read, otherwise read them first
 				If $__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default Then
-					Local $bData = __IPC__SocketReadBytes($iSocket, 4)
+					Local $bData = __IPC__SocketReadBytes($iSocket, 8) ; int64
 					If @error Then ExitLoop ; wait for more data to be received
 					If Not @error Then $__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Int($bData)
 				EndIf
 				; read the specified amount of message data bytes
-				Local $bData = __IPC__SocketReadBytes($iSocket, $__IPC__Data.mConnects[$iSocket]["iCommandBytes"])
+				Local $dData = __IPC__SocketReadBytes($iSocket, $__IPC__Data.mConnects[$iSocket]["iCommandBytes"])
 				If @error Then ExitLoop ; wait for more data to be received
+				; reset the command and message bytes
+				$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
+				$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default
 				; Handle the first byte specifying the command if applicable
 				Local $iDataCommand = Default
-				If $iCmd = $__IPC_MSG_DATA_CMD Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then
-					$iDataCommand = Int(BinaryMid($bData, 1, 4))
-					$bData = BinaryMid($bData, 5)
+				If $iCmd = $__IPC_MSG_CMD Or $iCmd = $__IPC_MSG_CMD_DATA Then $iDataCommand = __IPC__BinaryConsumeVar($dData)
+				Local $iDataCount = __IPC__BinaryConsumeVar($dData)
+				Local $arData[$iDataCount]
+				Local $sLogData = "arData["&$iDataCount&"]"
+				If $iDataCount>0 Then
+					$sLogData = "arData["
+					For $i=0 To $iDataCount-1
+						If $i<>0 Then $sLogData &= ", "
+						$arData[$i] = __IPC__BinaryConsumeVar($dData)
+						If IsFunc("_ToStringC") Then
+							$sLogData &= Execute('Call("_ToStringC", $arData[$i], False, "", "", " ")')
+						Else
+							$sLogData &= String($arData[$i])
+						EndIf
+					Next
+					$sLogData &= "]"
 				EndIf
-				; handle string conversion, if a string was sent
-				If $iCmd = $__IPC_MSG_DATA_STR Or $iCmd = $__IPC_MSG_DATA_CMD_STR Then
-					$bData = BinaryToString($bData, 2)
-					If @error Then
-						__IPC_Log($__IPC_LOG_ERROR, "Error converting received binary data to string: " & $bData)
-						$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default
-						$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
-						ContinueLoop
-					EndIf
-				EndIf
+				If UBound($arData)<=0 Then $arData = Default
 				; get the callback (if present) and the hProcess (if on main process and the message came from a sub process)
 				Local $sCallback = Default
 				Local $hProcess = Default
@@ -1051,37 +1434,42 @@ Func __IPC__ProcessMessagesAtSocket($iSocket)
 					If @error Then ContinueLoop ; should not happen, as long as the connection is there
 					$sCallback = $__IPC__Data.mServer.mProcesses[$iProcess].sCallback
 				EndIf
-				If $sCallback<>Default And $iDataCommand<>Default Then ; handle command message callback
-					__IPC_Log($__IPC_LOG_DEBUG, "MSG_DATA_CMD Received data: "&$iSocket&" >> "&$iDataCommand&" >> "&$bData)
-					If $hProcess<>Default Then
-						Call($sCallback, $hProcess, $bData, $iDataCommand)
-						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 3 parameters")
-					Else
-						Call($sCallback, $bData, $iDataCommand)
-						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
+				If $sCallback<>Default Then
+					If $iDataCommand<>Default And $arData<>Default Then
+						__IPC_Log($__IPC_LOG_DEBUG, "__IPC_MSG_CMD_DATA Received command: "&$iSocket&" >> "&$iDataCommand&" >> "&$sLogData)
+						If $hProcess<>Default Then
+							Call($sCallback, $hProcess, $iDataCommand, $arData)
+							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 3 parameters")
+						Else
+							Call($sCallback, $iDataCommand, $arData)
+							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
+						EndIf
+					ElseIf $iDataCommand<>Default Then
+						__IPC_Log($__IPC_LOG_DEBUG, "__IPC_MSG_CMD Received command: "&$iSocket&" >> "&$iDataCommand)
+						If $hProcess<>Default Then
+							Call($sCallback, $hProcess, $iDataCommand, Default)
+							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
+						Else
+							Call($sCallback, $iDataCommand, Default)
+							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 1 parameter")
+						EndIf
+					ElseIf $arData<>Default Then
+						__IPC_Log($__IPC_LOG_DEBUG, "__IPC_MSG_DATA Received data: "&$iSocket&" >> "&$sLogData)
+						If $hProcess<>Default Then
+							Call($sCallback, $hProcess, Default, $arData)
+							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
+						Else
+							Call($sCallback, Default, $arData)
+							If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 1 parameters")
+						EndIf
 					EndIf
-				ElseIf $sCallback<>Default Then ; handle data message callback
-					__IPC_Log($__IPC_LOG_DEBUG, "MSG_DATA Received data: "&$iSocket&" >> "&$bData)
-					If $hProcess<>Default Then
-						Call($sCallback, $hProcess, $bData)
-						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 2 parameters")
-					Else
-						Call($sCallback, $bData)
-						If @error Then __IPC_Log($__IPC_LOG_ERROR, "Error calling: "&$sCallback&" with 1 parameter")
-					EndIf
-				EndIf
-				; reset the command and message bytes
-				If MapExists($__IPC__Data["mConnects"], $iSocket) Then ; may have been disconnected by the user in the callbacks
-					$__IPC__Data["mConnects"][$iSocket]["iCommandBytes"] = Default
-					$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
 				EndIf
 			Case $__IPC_MSG_CONNECT ; server side only
 				; read the provided hProcess to assign to the socket
-				Local $bData = __IPC__SocketReadBytes($iSocket, 4)
+				Local $hProcess = Int(__IPC__SocketReadBytes($iSocket, 4))
 				If @error Then ExitLoop ; wait for more data to be received
-				__IPC_Log($__IPC_LOG_INFO, "Subprocess connected: "&$iSocket&" Process: "&Int($bData))
+				__IPC_Log($__IPC_LOG_INFO, "Subprocess connected: "&$iSocket&" Process: "&$hProcess)
 				$__IPC__Data["mConnects"][$iSocket]["iLastCommand"] = Default
-				Local $hProcess = Int($bData)
 				Local $iProcess = __IPC__ProcessHandleToId($hProcess)
 				If @error Then ContinueLoop ; tcp sent a not existing hProcess => protocol error, skip the command
 				$__IPC__Data["mConnects"][$iSocket]["hProcess"] = $hProcess

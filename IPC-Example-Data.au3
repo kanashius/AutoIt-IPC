@@ -31,17 +31,25 @@ Func _MainProcess()
 EndFunc
 
 ; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
-Func _CallbackMain($hSubProcess, $data)
+Func _CallbackMain($hSubProcess, $iCmd, $arData)
 	; $hSubProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
-	; $data can be a string or binary data, depending on the data sent by the sub process
-	ConsoleWrite("Data from ["&$hSubProcess&"]: "&$data&@crlf)
+	; $iCmd contains the command send by the server, or Default if only data was sent => only Default here
+	; $arData contains an array with all the send data
+	ConsoleWrite("Data from ["&$hSubProcess&"]: ")
+	For $i=0 to UBound($arData)-1
+		If $i<>0 Then ConsoleWrite(", ")
+		ConsoleWrite($arData[$i])
+	Next
+	ConsoleWrite(@crlf)
 EndFunc
 
 ; the sub process main method, registered in __IPC_SubCheck to be called when the script is running as a sub process
 Func _SubProcess($hSubProcess)
 	; send data to the main process
 	__IPC_SubSend("Starting")
-	Sleep(Random(10, 1000, 1)) ; wait random time
+	Local $iMs = Random(10, 1000, 1)
+	__IPC_SubSend("Start sleep for", $iMs, "ms")
+	Sleep($iMs) ; wait random time
 	; send data to the main process
 	__IPC_SubSend("Done")
 EndFunc

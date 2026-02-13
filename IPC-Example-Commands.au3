@@ -33,22 +33,24 @@ Func _MainProcess()
 EndFunc
 
 ; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
-Func _CallbackMain($hSubProcess, $data, $iCmd)
+Func _CallbackMain($hSubProcess, $iCmd, $arData)
 	; $hSubProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
-	; $data can be a string or binary data, depending on the data sent by the sub process
-	; $iCmd contains the command send by the server
+	; $iCmd contains the command send by the server, or Default if only data was sent
+	; $arData contains an array with all the send data or Default if only a command was sent
 	Switch $iCmd
 		Case $iCOMMAND_START
-			ConsoleWrite("Start processing "&$data&" items"&@crlf)
+			ConsoleWrite("Start processing "&$arData[0]&" items"&@crlf)
 		Case $iCOMMAND_END
 			ConsoleWrite("Finished processing"&@crlf)
 		Case $iCOMMAND_PROGRESS
-			Local $iTotal = Int(BinaryMid($data, 1, 4)) ; int values are 32bit=>4byte
-			Local $iItemsDone = Int(BinaryMid($data, 5, 4)) ; int values are 32bit=>4byte
+			Local $iTotal = $arData[0]
+			Local $iItemsDone = $arData[1]
 			Local $iPerc = ($iItemsDone=$iTotal)?100:Mod($iItemsDone, $iTotal)
 			ConsoleWrite("Progress: "&$iItemsDone&"/"&$iTotal&" = "&Round($iItemsDone/$iTotal, 2)&" => "&$iPerc&"%"&@crlf)
+		Case Default
+			ConsoleWrite("Data received"&@crlf)
 		Case Else
-			ConsoleWrite("Unknown command ["&$iCmd&"]: "&$data&@crlf)
+			ConsoleWrite("Unknown command ["&$iCmd&"] with arData["&UBound($arData)&"] "&@crlf)
 	EndSwitch
 EndFunc
 
@@ -57,12 +59,12 @@ Func _SubProcess($hSubProcess)
 	Local $iTotalItems = 10
 	If UBound($CmdLine)>1 Then $iTotalItems = Int($CmdLine[1])
 	ConsoleWrite("Process ["&$hSubProcess&"]: Start processing items: "&$iTotalItems&@crlf)
-	__IPC_SubSend($iCOMMAND_START, $iTotalItems)
+	__IPC_SubSendCmd($iCOMMAND_START, $iTotalItems)
 	If @error Then __IPC_Log($__IPC_LOG_ERROR, "Failed sending", @error, @extended) ; to check for errors when sending
 	For $i=0 to $iTotalItems-1
-		__IPC_SubSend($iCOMMAND_PROGRESS, Binary($iTotalItems)&Binary($i+1))
+		__IPC_SubSendCmd($iCOMMAND_PROGRESS, $iTotalItems, $i+1)
 	Next
-	__IPC_SubSend($iCOMMAND_END, "") ; to sent only a command, make $data empty. Otherwise, the command will be sent as data
-	__IPC_SubSend($iCOMMAND_UNKNOWN, "some command")
+	__IPC_SubSendCmd($iCOMMAND_END) ; to sent only a command, make $data empty. Otherwise, the command will be sent as data
+	__IPC_SubSendCmd($iCOMMAND_UNKNOWN, "some command")
 	ConsoleWrite("Process ["&$hSubProcess&"]: Finished"&@crlf)
 EndFunc

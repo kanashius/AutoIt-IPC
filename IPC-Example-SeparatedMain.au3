@@ -33,20 +33,20 @@ Func _Exit()
 EndFunc
 
 ; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
-Func _CallbackMain($hSubProcess, $data, $iCmd = Default)
-	If $iCmd >= 500 And $data="Done" Then
+Func _CallbackMain($hSubProcess, $iCmd, $arData)
+	If $iCmd >= 500 And UBound($arData)>0 And $arData[0]="Done" Then
 		; sends the terminate signal to the sub process and disconnects the connection to the sub process. Stdout/Stderr will be processed until the sub process or main process ends
 		__IPC_ProcessStop($hSubProcess)
 	Else
-		If $data="Done" Then
+		If UBound($arData)>0 And $arData[0]="Done" Then
 			__IPC_Log($__IPC_LOG_INFO, "Done: "&$iCmd)
 			If $iCmd>=300 Then
 				__IPC_Log($__IPC_LOG_INFO, "Send start command for: "&$iCmd+100)
-				__IPC_MainSend($hSubProcess, $iCmd+100, "")
+				__IPC_MainSendCmd($hSubProcess, $iCmd+100)
 				If @error Then __IPC_Log($__IPC_LOG_ERROR, "MainSend: ", @error, @extended)
 			EndIf
 		Else
-			__IPC_Log($__IPC_LOG_INFO, $data&": "&$iCmd)
+			__IPC_Log($__IPC_LOG_INFO, $arData[0]&": "&$iCmd)
 		EndIf
 	EndIf
 EndFunc

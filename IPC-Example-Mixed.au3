@@ -39,22 +39,34 @@ Func _MainProcess()
 EndFunc
 
 ; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
-Func _CallbackMain($hSubProcess, $data, $iCmd = Default)
+Func _CallbackMain($hSubProcess, $iCmd, $arData)
 	; $hSubProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
 	; $data can be a string or binary data, depending on the data sent by the sub process
 	; $iCmd only needs to be a parameter, if the sub process sends commands. If the sub process may send commands, but also only data without a command, a default value needs to be specified.
 	Switch $iCmd
 		Case $iCOMMAND_TEST
-			ConsoleWrite("Command 1: "&$data&@crlf)
+			If UBound($arData)<1 Then
+				ConsoleWrite("$iCOMMAND_TEST failed, missing parameter"&@crlf)
+				Return
+			EndIf
+			ConsoleWrite("Command 1: "&$arData[0]&@crlf)
 		Case $iCOMMAND_PROGRESS
-			Local $iTotal = Int(BinaryMid($data, 1, 4)) ; int values are 32bit=>4byte
-			Local $iItemsDone = Int(BinaryMid($data, 5, 4)) ; int values are 32bit=>4byte
+			If UBound($arData)<2 Then
+				ConsoleWrite("$iCOMMAND_PROGRESS failed, missing parameter"&@crlf)
+				Return
+			ElseIf Not IsInt($arData[0]) Or Not IsInt($arData[1]) Then
+				ConsoleWrite("$iCOMMAND_PROGRESS failed, parameter is not an integer"&@crlf)
+				Return
+			EndIf
+			Local $iTotal = $arData[0]
+			Local $iItemsDone = $arData[1]
 			Local $iPerc = ($iItemsDone=$iTotal)?100:Mod($iItemsDone, $iTotal)
 			ConsoleWrite("Progress: "&$iItemsDone&"/"&$iTotal&" = "&Round($iItemsDone/$iTotal, 2)&" => "&$iPerc&"%"&@crlf)
 		Case Default
-			ConsoleWrite("Data: "&$data&@crlf)
+			If UBound($arData)<1 Then Return
+			ConsoleWrite("Data: "&$arData[0]&@crlf)
 		Case Else
-			ConsoleWrite("Unknown command ["&$iCmd&"]: "&$data&@crlf)
+			ConsoleWrite("Unknown command ["&$iCmd&"]: "&UBound($arData)&@crlf)
 	EndSwitch
 EndFunc
 
@@ -65,11 +77,11 @@ Func _SubProcess($hSubProcess)
 	ConsoleWrite("Process ["&$hSubProcess&"]: Start processing items: "&$iTotalItems&@crlf)
 	__IPC_SubSend("Start processing items") ; send data without a command
 	For $i=0 to $iTotalItems-1
-		__IPC_SubSend($iCOMMAND_PROGRESS, Binary($iTotalItems)&Binary($i+1))
+		__IPC_SubSendCmd($iCOMMAND_PROGRESS, $iTotalItems, $i+1)
 	Next
 	__IPC_SubSend("Done processing items")
-	__IPC_SubSend($iCOMMAND_TEST, "test command")
+	__IPC_SubSendCmd($iCOMMAND_TEST, "test command")
 	If @error Then __IPC_Log($__IPC_LOG_ERROR, "Failed sending", @error, @extended) ; to check for errors when sending
-	__IPC_SubSend($iCOMMAND_UNKNOWN, "") ; send an unknown command
+	__IPC_SubSendCmd($iCOMMAND_UNKNOWN) ; send an unknown command
 	ConsoleWrite("Process ["&$hSubProcess&"]: Finished"&@crlf)
 EndFunc

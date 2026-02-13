@@ -40,12 +40,12 @@ Func _MainProcess()
 EndFunc
 
 ; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
-Func _CallbackMain($hSubProcess, $data, $iCmd = Default)
+Func _CallbackMain($hSubProcess, $iCmd, $arData)
 	; $hSubProcess can be used to differentiate between different sub processes (if multiple are started with the same callback method)
-	; $data can be a string or binary data, depending on the data sent by the sub process
-	; $iCmd only needs to be a parameter, if the sub process sends commands. If the sub process may send commands, but also only data without a command, a default value needs to be specified.
+	; $iCmd contains the command send by the server, or Default if only data was sent
+	; $arData contains an array with all the send data or Default if only a command was sent
 	ConsoleWrite("----------------------------------------------------"&@crlf)
-	ConsoleWrite($data&@crlf)
+	ConsoleWrite($arData[0]&@crlf)
 	ConsoleWrite("----------------------------------------------------"&@crlf)
 EndFunc
 

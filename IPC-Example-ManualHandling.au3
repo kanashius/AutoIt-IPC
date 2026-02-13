@@ -14,11 +14,11 @@
 Global Const $iCOMMAND_TEST = 1, $iCOMMAND_UNKNOWN = 2, $iCOMMAND_PROGRESS = 3
 Global $mMainGui[] ; just a map for all ctrl variables to avoid to many global variables
 
-; make sure main process pullrate is 0 to disable automatic data pulling
+; make sure main process pullrate is 0 to disable automatic data pulling for the main process
 __IPC_StartUp($__IPC_LOG_INFO, 0)
 
 ; check if the call is a sub process and start the respective function
-; make sure sub process pullrate is 0 to disable automatic data pulling
+; make sure sub process pullrate is 0 to disable automatic data pulling for the sub process
 Global $hProcess = __IPC_SubCheck("_SubProcess", "_MainProcess", "_CallbackSub", "_CallbackSubClose", $__IPC_LOG_INFO, 0)
 If @error Then __IPC_Log($__IPC_LOG_ERROR, "__IPC_SubCheck: "&@error&":"&@extended)
 
@@ -58,33 +58,28 @@ Func _MainProcess()
 				If Not $bPauseProcessHandling Then GUICtrlSetData($mMainGui.idButtonPause, "Pause handling")
 		EndSwitch
 		If Not $bPauseProcessHandling Then
-			If $hProcess=0 Then ; check if script running as main/sub process
-				; handle incoming data at the main process, manual pulling
-				__IPC_MainProcessing()
-			Else
-				; handle incoming data at the sub process, manual pulling
-				__IPC_SubProcessing()
-			EndIf
+			; handle incoming data at the main process, manual pulling
+			__IPC_MainProcessing()
 		EndIf
 	WEnd
 EndFunc
 
 ; registered as callback in __IPC_StartProcess to be called when data from the sub process is received
-Func _CallbackMain($hSubProcess, $data, $iCmd = Default)
+Func _CallbackMain($hSubProcess, $iCmd, $arData)
 	Switch $iCmd
 		Case $iCOMMAND_TEST
-			GUICtrlSetData($mMainGui.idEdit, "COMMAND_TEST ["&$hSubProcess&"]: "&$data&@crlf, True)
+			GUICtrlSetData($mMainGui.idEdit, "COMMAND_TEST ["&$hSubProcess&"]: "&$arData[0]&@crlf, True)
 		Case $iCOMMAND_PROGRESS
-			Local $iTotal = Int(BinaryMid($data, 1, 4)) ; int values are 32bit=>4byte
-			Local $iItemsDone = Int(BinaryMid($data, 5, 4)) ; int values are 32bit=>4byte
+			Local $iTotal = $arData[0]
+			Local $iItemsDone = $arData[1]
 			Local $dProgress = $iItemsDone/$iTotal
 			Local $iPerc = Int($dProgress*100)
 			GUICtrlSetData($mMainGui.idProgress, $iPerc)
 			GUICtrlSetData($mMainGui.idEdit, "COMMAND_PROGRESS ["&$hSubProcess&"]: "&$iItemsDone&"/"&$iTotal&" = "&Round($dProgress, 2)&" => "&$iPerc&"%"&@crlf, True)
 		Case Default
-			GUICtrlSetData($mMainGui.idEdit, $data&@crlf, True)
+			GUICtrlSetData($mMainGui.idEdit, $arData[0]&@crlf, True)
 		Case Else
-			GUICtrlSetData($mMainGui.idEdit, "COMMAND_UNKNOWN ["&$hSubProcess&"] ["&$iCmd&"]: "&$data&@crlf, True)
+			GUICtrlSetData($mMainGui.idEdit, "COMMAND_UNKNOWN ["&$hSubProcess&"] ["&$iCmd&"] ["&UBound($arData)&"]"&@crlf, True)
 	EndSwitch
 EndFunc
 
@@ -99,14 +94,16 @@ Func _SubProcess($hSubProcess)
 	If UBound($CmdLine)>1 Then $iTotalItems = Int($CmdLine[1])
 	__IPC_SubSend("Start processing items") ; send data without a command
 	For $i=0 to $iTotalItems-1
-		__IPC_SubSend($iCOMMAND_PROGRESS, Binary($iTotalItems)&Binary($i+1))
+		__IPC_SubSendCmd($iCOMMAND_PROGRESS, $iTotalItems, $i+1)
 		If @error Then Return SetError(2, 0 , False)
-		Sleep(Random(1,500, 1)) ; just this sleep lets the entire application freeze/crash (why?)
+		Sleep(Random(1,500, 1))
 	Next
 	__IPC_SubSend("Done processing items")
-	__IPC_SubSend($iCOMMAND_TEST, "test command")
+	__IPC_SubSendCmd($iCOMMAND_TEST, "test command")
 	If @error Then __IPC_Log($__IPC_LOG_ERROR, "Failed sending", @error, @extended) ; to check for errors when sending
-	__IPC_SubSend($iCOMMAND_UNKNOWN, "") ; send an unknown command
+	__IPC_SubSendCmd($iCOMMAND_UNKNOWN) ; send an unknown command
+	; handle incoming data at the sub process, manual pulling
+	__IPC_SubProcessing()
 	Return True
 EndFunc
 
@@ -116,6 +113,6 @@ Func _CallbackSubClose()
 EndFunc
 
 ; registered as callback in __IPC_SubCheck to be called when data from the main process is received
-Func _CallbackSub($data, $iCmd = Default)
-	ConsoleWrite("Callback Sub: "&$iCmd&" >> "&$data&@crlf)
+Func _CallbackSub($iCmd, $arData)
+	ConsoleWrite("Callback Sub: "&$iCmd&" >> "&UBound($arData)&@crlf)
 EndFunc
